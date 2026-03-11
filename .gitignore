@@ -1,0 +1,19 @@
+# Swift / Xcode
+.build/
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Swift Package Manager
+Package.resolved
+.swiftpm/
+
+# App data (never commit user databases)
+*.db
+*.db-wal
+*.db-shm

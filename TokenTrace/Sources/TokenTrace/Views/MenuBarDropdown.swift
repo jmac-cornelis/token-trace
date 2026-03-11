@@ -1,0 +1,299 @@
+import SwiftUI
+
+struct MenuBarDropdown: View {
+    @EnvironmentObject var usageStore: UsageStore
+    @EnvironmentObject var collector: CollectorService
+    @State private var expandedSessionID: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            headerSection
+
+            Divider().padding(.horizontal, 12)
+
+            todaySummarySection
+
+            Divider().padding(.horizontal, 12)
+
+            sourceBreakdownSection
+
+            Divider().padding(.horizontal, 12)
+
+            tokenBreakdownSection
+
+            Divider().padding(.horizontal, 12)
+
+            recentSessionsSection
+
+            Divider().padding(.horizontal, 12)
+
+            actionsSection
+        }
+        .frame(width: 320)
+        .padding(.vertical, 8)
+    }
+
+    // MARK: - Sections
+
+    private var headerSection: some View {
+        HStack {
+            Text("Token Trace")
+                .font(.headline)
+                .fontWeight(.semibold)
+            Spacer()
+            Text("Updated \(UsageStore.formatRelativeTime(usageStore.lastRefreshTime))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    private var todaySummarySection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("TODAY")
+                .font(.caption2)
+                .fontWeight(.medium)
+                .foregroundStyle(.tertiary)
+
+            HStack(alignment: .firstTextBaseline) {
+                Text(UsageStore.formatTokens(usageStore.todayTotalTokens))
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                Text("tokens")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 12) {
+                HStack(spacing: 4) {
+                    Text("In")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Text(UsageStore.formatTokens(usageStore.todayPromptTokens))
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 4) {
+                    Text("Out")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Text(UsageStore.formatTokens(usageStore.todayCompletionTokens))
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    private var sourceBreakdownSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("SOURCES")
+                .font(.caption2)
+                .fontWeight(.medium)
+                .foregroundStyle(.tertiary)
+
+            sourceRow(
+                name: "OpenCode",
+                tokens: usageStore.openCodeTokens,
+                isHealthy: usageStore.openCodeHealthy,
+                icon: "terminal.fill"
+            )
+            sourceRow(
+                name: "Roo Code",
+                tokens: usageStore.rooCodeTokens,
+                isHealthy: usageStore.rooCodeHealthy,
+                icon: "hammer.fill"
+            )
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    private func sourceRow(name: String, tokens: Int, isHealthy: Bool, icon: String) -> some View {
+        HStack {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundStyle(isHealthy ? Color.secondary : Color.red)
+                .frame(width: 16)
+            Text(name)
+                .font(.subheadline)
+            Spacer()
+            Text(UsageStore.formatTokens(tokens))
+                .font(.subheadline)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var tokenBreakdownSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("BREAKDOWN")
+                .font(.caption2)
+                .fontWeight(.medium)
+                .foregroundStyle(.tertiary)
+
+            breakdownRow(label: "Prompt", value: usageStore.todayPromptTokens)
+            breakdownRow(label: "Completion", value: usageStore.todayCompletionTokens)
+            breakdownRow(label: "Cached", value: usageStore.todayCachedTokens)
+            if usageStore.todayReasoningTokens > 0 {
+                breakdownRow(label: "Reasoning", value: usageStore.todayReasoningTokens)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    private func breakdownRow(label: String, value: Int) -> some View {
+        HStack {
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(UsageStore.formatTokens(value))
+                .font(.subheadline)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var recentSessionsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("RECENT SESSIONS")
+                .font(.caption2)
+                .fontWeight(.medium)
+                .foregroundStyle(.tertiary)
+
+            if usageStore.recentSessions.isEmpty {
+                Text("No sessions yet")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .padding(.vertical, 4)
+            } else {
+                ForEach(usageStore.recentSessions.prefix(5)) { session in
+                    sessionRow(session)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    private func sessionRow(_ session: SessionSummary) -> some View {
+        let isExpanded = expandedSessionID == session.id
+        return VStack(alignment: .leading, spacing: 0) {
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    expandedSessionID = isExpanded ? nil : session.id
+                }
+            }) {
+                HStack {
+                    Circle()
+                        .fill(session.source == .opencode ? Color.blue : Color.purple)
+                        .frame(width: 6, height: 6)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(session.projectName ?? session.id)
+                            .font(.subheadline)
+                            .lineLimit(1)
+                        HStack(spacing: 4) {
+                            if let model = session.model {
+                                Text(model)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Text("·")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                            Text(UsageStore.formatRelativeTime(session.lastSeen))
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+
+                    Spacer()
+
+                    Text(UsageStore.formatTokens(session.totalTokens))
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 3) {
+                    sessionDetailRow("Prompt", session.promptTokens)
+                    sessionDetailRow("Completion", session.completionTokens)
+                    if session.cachedTokens > 0 {
+                        sessionDetailRow("Cached", session.cachedTokens)
+                    }
+                    if session.reasoningTokens > 0 {
+                        sessionDetailRow("Reasoning", session.reasoningTokens)
+                    }
+                    HStack(spacing: 4) {
+                        Text("\(session.eventCount) requests")
+                            .font(.caption2)
+                            .foregroundStyle(.quaternary)
+                        if let agent = session.agent {
+                            Text("· \(agent)")
+                                .font(.caption2)
+                                .foregroundStyle(.quaternary)
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+                .padding(.leading, 18)
+                .padding(.top, 4)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    private func sessionDetailRow(_ label: String, _ value: Int) -> some View {
+        HStack {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.quaternary)
+            Spacer()
+            Text(UsageStore.formatTokens(value))
+                .font(.caption2)
+                .monospacedDigit()
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var actionsSection: some View {
+        HStack(spacing: 12) {
+            Button(action: { collector.togglePause() }) {
+                Label(
+                    collector.isPaused ? "Resume" : "Pause",
+                    systemImage: collector.isPaused ? "play.fill" : "pause.fill"
+                )
+                .font(.caption)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+
+            Spacer()
+
+            Button(action: { NSApplication.shared.terminate(nil) }) {
+                Label("Quit", systemImage: "xmark.circle")
+                    .font(.caption)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+}
