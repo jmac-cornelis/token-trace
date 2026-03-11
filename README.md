@@ -90,6 +90,30 @@ TokenTrace/
         └── MenuBarIcon.swift        # Menu bar label
 ```
 
+## How Token Counting Works
+
+Token Trace does not count tokens itself. It reads the token counts that your AI tools already recorded locally.
+
+When you use OpenCode or Roo Code, every LLM API call returns a `usage` field in the response (standard across OpenAI, Anthropic, and other providers). Both tools capture these provider-reported counts and store them on disk:
+
+- **OpenCode** stores them in a SQLite database (`~/.local/share/opencode/opencode.db`). Each assistant message has a JSON `data` column containing `tokens: {total, input, output, reasoning, cache: {read, write}}`. We query these with `json_extract()`, joined with session and project tables for context.
+
+- **Roo Code** stores them in JSON files under VS Code's global storage (`~/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/tasks/`). Each task directory has a `ui_messages.json` where `api_req_started` events contain `{tokensIn, tokensOut, cacheWrites, cacheReads}`. These values are cumulative within a task, so we compute deltas between consecutive entries to get per-request counts.
+
+Token Trace polls these sources every 5 seconds, normalizes the data into a common format, and writes it to its own SQLite database for aggregation and display.
+
+### Is this guaranteed to be only my tokens?
+
+Yes. Token Trace reads exclusively from local files on your machine:
+
+- Both source paths (`~/.local/share/opencode/` and `~/Library/Application Support/Code/`) are user-local directories
+- OpenCode's database is opened with `readonly = true` — we never write to it
+- Roo Code's JSON files are read via standard file I/O — never modified
+- Token Trace makes **zero network calls** — no HTTP, no sockets, no telemetry
+- Our own database lives at `~/Library/Application Support/TokenTrace/token-trace.db`
+
+Any usage from other machines, other users, or API calls made outside of OpenCode/Roo Code will not appear here. This is strictly what these two tools logged locally on your machine.
+
 ## Privacy
 
 - No prompts or completions are stored — only token count metadata
