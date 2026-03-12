@@ -214,9 +214,7 @@ struct MenuBarDropdown: View {
                 }
             }) {
                 HStack {
-                    Circle()
-                        .fill(sourceColor(session.source))
-                        .frame(width: 6, height: 6)
+                    SessionStatusDot(status: session.activityStatus)
 
                     VStack(alignment: .leading, spacing: 1) {
                         Text(session.displayName)
