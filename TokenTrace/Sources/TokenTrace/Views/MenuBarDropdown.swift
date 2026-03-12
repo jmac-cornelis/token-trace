@@ -114,6 +114,12 @@ struct MenuBarDropdown: View {
                 isHealthy: usageStore.rooCodeHealthy,
                 icon: "hammer.fill"
             )
+            sourceRow(
+                name: "Codex",
+                tokens: usageStore.codexTokens,
+                isHealthy: usageStore.codexHealthy,
+                icon: "sparkle"
+            )
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -198,7 +204,7 @@ struct MenuBarDropdown: View {
             }) {
                 HStack {
                     Circle()
-                        .fill(session.source == .opencode ? Color.blue : Color.purple)
+                        .fill(sourceColor(session.source))
                         .frame(width: 6, height: 6)
 
                     VStack(alignment: .leading, spacing: 1) {
@@ -368,7 +374,7 @@ struct MenuBarDropdown: View {
                     ForEach(usageStore.selectedDaySessions) { session in
                         HStack {
                             Circle()
-                                .fill(session.source == .opencode ? Color.blue : Color.purple)
+                                .fill(sourceColor(session.source))
                                 .frame(width: 5, height: 5)
                             Text(session.displayName)
                                 .font(.caption2)
@@ -385,6 +391,14 @@ struct MenuBarDropdown: View {
                 .padding(.leading, 4)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
+        }
+    }
+
+    private func sourceColor(_ source: UsageEvent.Source) -> Color {
+        switch source {
+        case .opencode: return .blue
+        case .roo: return .purple
+        case .codex: return .green
         }
     }
 

@@ -6,6 +6,7 @@ final class CollectorService: ObservableObject {
     private let db: DatabaseManager
     private let openCodeReader: OpenCodeReader
     private let rooCodeReader: RooCodeReader
+    private let codexReader: CodexReader
     private let usageStore: UsageStore
     private var timer: Timer?
     private var isRunning = false
@@ -20,6 +21,7 @@ final class CollectorService: ObservableObject {
         self.db = db
         self.openCodeReader = OpenCodeReader()
         self.rooCodeReader = RooCodeReader()
+        self.codexReader = CodexReader()
         self.usageStore = usageStore
     }
 
@@ -53,6 +55,7 @@ final class CollectorService: ObservableObject {
         collectError = nil
         await collectFromOpenCode()
         await collectFromRooCode()
+        await collectFromCodex()
         usageStore.refresh()
         lastCollectTime = Date()
     }
@@ -94,6 +97,29 @@ final class CollectorService: ObservableObject {
         } catch {
             usageStore.rooCodeHealth = SourceHealth(
                 source: .roo,
+                isHealthy: false,
+                lastEventTime: nil,
+                errorMessage: error.localizedDescription,
+                eventCount: 0
+            )
+        }
+    }
+
+    private func collectFromCodex() async {
+        do {
+            try codexReader.connect()
+            let cursor = try db.getCursor(for: .codex)
+            let (events, newCursor) = codexReader.fetchEvents(since: cursor)
+            if !events.isEmpty {
+                try db.insertEvents(events)
+            }
+            if let newCursor = newCursor {
+                try db.setCursor(for: .codex, cursor: newCursor)
+            }
+            usageStore.codexHealth = codexReader.healthCheck()
+        } catch {
+            usageStore.codexHealth = SourceHealth(
+                source: .codex,
                 isHealthy: false,
                 lastEventTime: nil,
                 errorMessage: error.localizedDescription,

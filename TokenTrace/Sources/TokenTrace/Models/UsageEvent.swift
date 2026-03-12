@@ -25,6 +25,7 @@ struct UsageEvent: Codable, FetchableRecord, PersistableRecord, Identifiable {
     enum Source: String, Codable, DatabaseValueConvertible {
         case opencode
         case roo
+        case codex
     }
 
     static let databaseTableName = "usage_events"
