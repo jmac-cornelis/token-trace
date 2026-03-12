@@ -26,6 +26,12 @@ final class UsageStore: ObservableObject {
     @Published var selectedDaySessions: [SessionSummary] = []
     @Published var lastRefreshTime: Date = Date()
 
+    @Published var chartRange: ChartRange = .week
+    @Published var chartData: [ChartDataPoint] = []
+    @Published var rangeTotalTokens: Int = 0
+    @Published var rangePromptTokens: Int = 0
+    @Published var rangeCompletionTokens: Int = 0
+
     // MARK: – Source Health
 
     @Published var openCodeHealth: SourceHealth?
@@ -55,6 +61,7 @@ final class UsageStore: ObservableObject {
             codexTokens = summary.bySource[.codex] ?? 0
             recentSessions = try db.recentSessions(limit: 10)
             dailySummaries = try db.dailySummaries(days: 14)
+            loadChartData()
             lastRefreshTime = Date()
         } catch {
             print("[UsageStore] Refresh error: \(error)")
@@ -71,6 +78,23 @@ final class UsageStore: ObservableObject {
         } else {
             return "\(count)"
         }
+    }
+
+    func loadChartData() {
+        do {
+            chartData = try db.chartData(range: chartRange)
+            let summary = try db.rangeSummary(range: chartRange)
+            rangeTotalTokens = summary.total
+            rangePromptTokens = summary.prompt
+            rangeCompletionTokens = summary.completion
+        } catch {
+            print("[UsageStore] Chart data error: \(error)")
+        }
+    }
+
+    func setChartRange(_ range: ChartRange) {
+        chartRange = range
+        loadChartData()
     }
 
     func loadSessionsForDate(_ date: Date) {
