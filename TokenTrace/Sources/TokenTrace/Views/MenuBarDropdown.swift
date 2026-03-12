@@ -16,6 +16,11 @@ struct MenuBarDropdown: View {
 
             Divider().padding(.horizontal, 12)
 
+            UsageChartView()
+                .environmentObject(usageStore)
+
+            Divider().padding(.horizontal, 12)
+
             sourceBreakdownSection
 
             Divider().padding(.horizontal, 12)

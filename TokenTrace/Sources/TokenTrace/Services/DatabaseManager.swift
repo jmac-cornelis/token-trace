@@ -14,6 +14,10 @@ final class DatabaseManager {
         dbPath = tokenTraceDir.appendingPathComponent("token-trace.db").path
     }
 
+    init(path: String) {
+        dbPath = path
+    }
+
     func setup() throws {
         var config = Configuration()
         config.prepareDatabase { db in
@@ -223,6 +227,85 @@ final class DatabaseManager {
                     lastSeen: row["lastSeen"]
                 )
             }
+        }
+    }
+
+    // MARK: - Chart Data
+
+    func chartData(range: ChartRange) throws -> [ChartDataPoint] {
+        return try dbPool.read { db in
+            let whereClause: String
+            let groupFormat: String
+            let labelFormat: String
+
+            switch range {
+            case .week:
+                whereClause = "WHERE observedAt >= date('now', '-7 days')"
+                groupFormat = "date(observedAt)"
+                labelFormat = "%m/%d"
+            case .month:
+                whereClause = "WHERE observedAt >= date('now', '-30 days')"
+                groupFormat = "date(observedAt)"
+                labelFormat = "%m/%d"
+            case .year:
+                whereClause = "WHERE observedAt >= date('now', '-365 days')"
+                groupFormat = "strftime('%Y-%W', observedAt)"
+                labelFormat = "%m/%d"
+            case .total:
+                whereClause = ""
+                groupFormat = "strftime('%Y-%m', observedAt)"
+                labelFormat = "%Y-%m"
+            }
+
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT \(groupFormat) as period,
+                       MIN(observedAt) as periodDate,
+                       COALESCE(SUM(totalTokens), 0) as total,
+                       COALESCE(SUM(promptTokens), 0) as prompt,
+                       COALESCE(SUM(completionTokens), 0) as completion
+                FROM usage_events
+                \(whereClause)
+                GROUP BY period
+                ORDER BY period ASC
+                """)
+
+            let formatter = DateFormatter()
+            formatter.dateFormat = labelFormat
+
+            return rows.compactMap { row -> ChartDataPoint? in
+                guard let date: Date = row["periodDate"] else { return nil }
+                return ChartDataPoint(
+                    date: date,
+                    totalTokens: row["total"],
+                    promptTokens: row["prompt"],
+                    completionTokens: row["completion"],
+                    label: formatter.string(from: date)
+                )
+            }
+        }
+    }
+
+    func rangeSummary(range: ChartRange) throws -> (total: Int, prompt: Int, completion: Int, cached: Int, reasoning: Int) {
+        return try dbPool.read { db in
+            let whereClause: String
+            if let days = range.days {
+                whereClause = "WHERE observedAt >= date('now', '-\(days) days')"
+            } else {
+                whereClause = ""
+            }
+
+            let row = try Row.fetchOne(db, sql: """
+                SELECT COALESCE(SUM(totalTokens), 0) as total,
+                       COALESCE(SUM(promptTokens), 0) as prompt,
+                       COALESCE(SUM(completionTokens), 0) as completion,
+                       COALESCE(SUM(cachedReadTokens) + SUM(cachedWriteTokens), 0) as cached,
+                       COALESCE(SUM(reasoningTokens), 0) as reasoning
+                FROM usage_events
+                \(whereClause)
+                """)
+
+            guard let row = row else { return (0, 0, 0, 0, 0) }
+            return (row["total"], row["prompt"], row["completion"], row["cached"], row["reasoning"])
         }
     }
 

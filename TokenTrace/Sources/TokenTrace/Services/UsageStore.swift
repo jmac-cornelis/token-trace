@@ -26,6 +26,12 @@ final class UsageStore: ObservableObject {
     @Published var selectedDaySessions: [SessionSummary] = []
     @Published var lastRefreshTime: Date = Date()
 
+    @Published var chartRange: ChartRange = .week
+    @Published var chartData: [ChartDataPoint] = []
+    @Published var rangeTotalTokens: Int = 0
+    @Published var rangePromptTokens: Int = 0
+    @Published var rangeCompletionTokens: Int = 0
+
     // MARK: – Source Health
 
     @Published var openCodeHealth: SourceHealth?
@@ -55,22 +61,31 @@ final class UsageStore: ObservableObject {
             codexTokens = summary.bySource[.codex] ?? 0
             recentSessions = try db.recentSessions(limit: 10)
             dailySummaries = try db.dailySummaries(days: 14)
+            loadChartData()
             lastRefreshTime = Date()
         } catch {
             print("[UsageStore] Refresh error: \(error)")
         }
     }
 
-    // MARK: – Formatting
+    static let formatTokens = TokenFormatter.formatTokens
+    static let formatRelativeTime = TokenFormatter.formatRelativeTime
 
-    static func formatTokens(_ count: Int) -> String {
-        if count >= 1_000_000 {
-            return String(format: "%.1fM", Double(count) / 1_000_000)
-        } else if count >= 1_000 {
-            return String(format: "%.1fk", Double(count) / 1_000)
-        } else {
-            return "\(count)"
+    func loadChartData() {
+        do {
+            chartData = try db.chartData(range: chartRange)
+            let summary = try db.rangeSummary(range: chartRange)
+            rangeTotalTokens = summary.total
+            rangePromptTokens = summary.prompt
+            rangeCompletionTokens = summary.completion
+        } catch {
+            print("[UsageStore] Chart data error: \(error)")
         }
+    }
+
+    func setChartRange(_ range: ChartRange) {
+        chartRange = range
+        loadChartData()
     }
 
     func loadSessionsForDate(_ date: Date) {
@@ -79,14 +94,5 @@ final class UsageStore: ObservableObject {
         } catch {
             print("[UsageStore] Failed to load sessions for date: \(error)")
         }
-    }
-
-    static func formatRelativeTime(_ date: Date) -> String {
-        let seconds = Int(-date.timeIntervalSinceNow)
-        if seconds < 0 { return "just now" }
-        if seconds < 60 { return "\(seconds)s ago" }
-        if seconds < 3600 { return "\(seconds / 60)m ago" }
-        if seconds < 86400 { return "\(seconds / 3600)h ago" }
-        return "\(seconds / 86400)d ago"
     }
 }

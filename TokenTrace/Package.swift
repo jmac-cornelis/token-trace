@@ -15,5 +15,13 @@ let package = Package(
             ],
             path: "Sources/TokenTrace"
         ),
+        .testTarget(
+            name: "TokenTraceTests",
+            dependencies: [
+                "TokenTrace",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ],
+            path: "Tests/TokenTraceTests"
+        ),
     ]
 )
