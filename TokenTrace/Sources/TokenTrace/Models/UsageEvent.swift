@@ -26,6 +26,7 @@ struct UsageEvent: Codable, FetchableRecord, PersistableRecord, Identifiable {
         case opencode
         case roo
         case codex
+        case openclaw
     }
 
     static let databaseTableName = "usage_events"

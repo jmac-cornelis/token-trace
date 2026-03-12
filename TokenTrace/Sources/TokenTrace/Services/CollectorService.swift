@@ -7,6 +7,7 @@ final class CollectorService: ObservableObject {
     private let openCodeReader: OpenCodeReader
     private let rooCodeReader: RooCodeReader
     private let codexReader: CodexReader
+    private let openclawReader: OpenclawReader
     private let usageStore: UsageStore
     private var timer: Timer?
     private var isRunning = false
@@ -22,6 +23,7 @@ final class CollectorService: ObservableObject {
         self.openCodeReader = OpenCodeReader()
         self.rooCodeReader = RooCodeReader()
         self.codexReader = CodexReader()
+        self.openclawReader = OpenclawReader()
         self.usageStore = usageStore
     }
 
@@ -56,6 +58,7 @@ final class CollectorService: ObservableObject {
         await collectFromOpenCode()
         await collectFromRooCode()
         await collectFromCodex()
+        await collectFromOpenclaw()
         usageStore.refresh()
         lastCollectTime = Date()
     }
@@ -120,6 +123,28 @@ final class CollectorService: ObservableObject {
         } catch {
             usageStore.codexHealth = SourceHealth(
                 source: .codex,
+                isHealthy: false,
+                lastEventTime: nil,
+                errorMessage: error.localizedDescription,
+                eventCount: 0
+            )
+        }
+    }
+
+    private func collectFromOpenclaw() async {
+        do {
+            let cursor = try db.getCursor(for: .openclaw)
+            let (events, newCursor) = openclawReader.fetchEvents(since: cursor)
+            if !events.isEmpty {
+                try db.insertEvents(events)
+            }
+            if let newCursor = newCursor {
+                try db.setCursor(for: .openclaw, cursor: newCursor)
+            }
+            usageStore.openclawHealth = openclawReader.healthCheck()
+        } catch {
+            usageStore.openclawHealth = SourceHealth(
+                source: .openclaw,
                 isHealthy: false,
                 lastEventTime: nil,
                 errorMessage: error.localizedDescription,
