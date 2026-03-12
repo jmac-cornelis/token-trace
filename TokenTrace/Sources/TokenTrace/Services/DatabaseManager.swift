@@ -14,6 +14,10 @@ final class DatabaseManager {
         dbPath = tokenTraceDir.appendingPathComponent("token-trace.db").path
     }
 
+    init(path: String) {
+        dbPath = path
+    }
+
     func setup() throws {
         var config = Configuration()
         config.prepareDatabase { db in
