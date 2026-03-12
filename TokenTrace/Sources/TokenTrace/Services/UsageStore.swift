@@ -25,6 +25,7 @@ final class UsageStore: ObservableObject {
     @Published var recentSessions: [SessionSummary] = []
     @Published var dailySummaries: [DailySummary] = []
     @Published var selectedDaySessions: [SessionSummary] = []
+    @Published var selectedDaySourceTotals: [UsageEvent.Source: Int] = [:]
     @Published var lastRefreshTime: Date = Date()
 
     @Published var chartRange: ChartRange = .week
@@ -95,6 +96,7 @@ final class UsageStore: ObservableObject {
     func loadSessionsForDate(_ date: Date) {
         do {
             selectedDaySessions = try db.sessionsForDate(date)
+            selectedDaySourceTotals = try db.sourceTotalsForDate(date)
         } catch {
             print("[UsageStore] Failed to load sessions for date: \(error)")
         }

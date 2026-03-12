@@ -359,8 +359,8 @@ struct MenuBarDropdown: View {
             .buttonStyle(.plain)
 
             if isExpanded {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 12) {
                         HStack(spacing: 3) {
                             Text("In")
                                 .font(.caption2)
@@ -379,8 +379,44 @@ struct MenuBarDropdown: View {
                                 .monospacedDigit()
                                 .foregroundStyle(.tertiary)
                         }
+                        if day.cachedTokens > 0 {
+                            HStack(spacing: 3) {
+                                Text("Cached")
+                                    .font(.caption2)
+                                    .foregroundStyle(.quaternary)
+                                Text(UsageStore.formatTokens(day.cachedTokens))
+                                    .font(.caption2)
+                                    .monospacedDigit()
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
                     }
                     .padding(.top, 4)
+
+                    let sourceTotals = usageStore.selectedDaySourceTotals
+                    if !sourceTotals.isEmpty {
+                        HStack(spacing: 8) {
+                            ForEach(Array(sourceTotals.keys.sorted(by: { $0.rawValue < $1.rawValue })), id: \.self) { source in
+                                HStack(spacing: 3) {
+                                    Circle()
+                                        .fill(sourceColor(source))
+                                        .frame(width: 4, height: 4)
+                                    Text(sourceName(source))
+                                        .font(.caption2)
+                                        .foregroundStyle(.quaternary)
+                                    Text(UsageStore.formatTokens(sourceTotals[source] ?? 0))
+                                        .font(.caption2)
+                                        .monospacedDigit()
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                        }
+                    }
+
+                    if !usageStore.selectedDaySessions.isEmpty {
+                        Divider()
+                            .padding(.vertical, 2)
+                    }
 
                     ForEach(usageStore.selectedDaySessions) { session in
                         HStack {
@@ -411,6 +447,15 @@ struct MenuBarDropdown: View {
         case .roo: return .purple
         case .codex: return .green
         case .openclaw: return .orange
+        }
+    }
+
+    private func sourceName(_ source: UsageEvent.Source) -> String {
+        switch source {
+        case .opencode: return "OC"
+        case .roo: return "Roo"
+        case .codex: return "Cdx"
+        case .openclaw: return "OClw"
         }
     }
 
