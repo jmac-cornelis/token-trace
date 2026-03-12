@@ -187,6 +187,29 @@ final class DatabaseManager {
         }
     }
 
+    func sourceTotalsForDate(_ date: Date) throws -> [UsageEvent.Source: Int] {
+        let calendar = Calendar.current
+        let startOfDay = calendar.startOfDay(for: date)
+        let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay)!
+
+        return try dbPool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT source, COALESCE(SUM(totalTokens), 0) as total
+                FROM usage_events
+                WHERE observedAt >= ? AND observedAt < ?
+                GROUP BY source
+                """, arguments: [startOfDay, endOfDay])
+
+            var result: [UsageEvent.Source: Int] = [:]
+            for row in rows {
+                if let source = UsageEvent.Source(rawValue: row["source"] as String) {
+                    result[source] = row["total"]
+                }
+            }
+            return result
+        }
+    }
+
     func sessionsForDate(_ date: Date) throws -> [SessionSummary] {
         let calendar = Calendar.current
         let startOfDay = calendar.startOfDay(for: date)
