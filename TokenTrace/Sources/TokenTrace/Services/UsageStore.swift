@@ -18,6 +18,7 @@ final class UsageStore: ObservableObject {
     @Published var openCodeTokens: Int = 0
     @Published var rooCodeTokens: Int = 0
     @Published var codexTokens: Int = 0
+    @Published var openclawTokens: Int = 0
 
     // MARK: – Sessions & Metadata
 
@@ -37,10 +38,12 @@ final class UsageStore: ObservableObject {
     @Published var openCodeHealth: SourceHealth?
     @Published var rooCodeHealth: SourceHealth?
     @Published var codexHealth: SourceHealth?
+    @Published var openclawHealth: SourceHealth?
 
     var openCodeHealthy: Bool { openCodeHealth?.isHealthy ?? false }
     var rooCodeHealthy: Bool { rooCodeHealth?.isHealthy ?? false }
     var codexHealthy: Bool { codexHealth?.isHealthy ?? false }
+    var openclawHealthy: Bool { openclawHealth?.isHealthy ?? false }
 
     init(db: DatabaseManager = .shared) {
         self.db = db
@@ -59,6 +62,7 @@ final class UsageStore: ObservableObject {
             openCodeTokens = summary.bySource[.opencode] ?? 0
             rooCodeTokens = summary.bySource[.roo] ?? 0
             codexTokens = summary.bySource[.codex] ?? 0
+            openclawTokens = summary.bySource[.openclaw] ?? 0
             recentSessions = try db.recentSessions(limit: 10)
             dailySummaries = try db.dailySummaries(days: 14)
             loadChartData()

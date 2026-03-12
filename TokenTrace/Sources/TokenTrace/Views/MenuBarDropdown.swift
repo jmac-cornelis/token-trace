@@ -125,6 +125,12 @@ struct MenuBarDropdown: View {
                 isHealthy: usageStore.codexHealthy,
                 icon: "sparkle"
             )
+            sourceRow(
+                name: "Openclaw",
+                tokens: usageStore.openclawTokens,
+                isHealthy: usageStore.openclawHealthy,
+                icon: "network"
+            )
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -404,6 +410,7 @@ struct MenuBarDropdown: View {
         case .opencode: return .blue
         case .roo: return .purple
         case .codex: return .green
+        case .openclaw: return .orange
         }
     }
 
