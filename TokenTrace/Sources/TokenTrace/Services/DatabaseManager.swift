@@ -57,6 +57,12 @@ final class DatabaseManager {
                 t.column("lastScanAt", .datetime)
             }
         }
+        migrator.registerMigration("v2-session-title") { db in
+            try db.alter(table: "usage_events") { t in
+                t.add(column: "sessionTitle", .text)
+            }
+        }
+
         return migrator
     }
 
@@ -107,7 +113,7 @@ final class DatabaseManager {
     func recentSessions(limit: Int = 10) throws -> [SessionSummary] {
         return try dbPool.read { db in
             let rows = try Row.fetchAll(db, sql: """
-                SELECT sessionID, source, projectName, model, agent,
+                SELECT sessionID, source, projectName, model, agent, sessionTitle,
                        COALESCE(SUM(totalTokens), 0) as totalTokens,
                        COALESCE(SUM(promptTokens), 0) as promptTokens,
                        COALESCE(SUM(completionTokens), 0) as completionTokens,
@@ -124,7 +130,86 @@ final class DatabaseManager {
                 SessionSummary(
                     id: row["sessionID"],
                     source: UsageEvent.Source(rawValue: row["source"] as String) ?? .opencode,
-                    title: nil,
+                    title: row["sessionTitle"],
+                    projectName: row["projectName"],
+                    model: row["model"],
+                    agent: row["agent"],
+                    totalTokens: row["totalTokens"],
+                    promptTokens: row["promptTokens"],
+                    completionTokens: row["completionTokens"],
+                    cachedTokens: row["cachedTokens"],
+                    reasoningTokens: row["reasoningTokens"],
+                    eventCount: row["eventCount"],
+                    firstSeen: row["firstSeen"],
+                    lastSeen: row["lastSeen"]
+                )
+            }
+        }
+    }
+
+    // MARK: - Daily History
+
+    func dailySummaries(days: Int = 14) throws -> [DailySummary] {
+        return try dbPool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT date(observedAt) as day,
+                       COALESCE(SUM(totalTokens), 0) as total,
+                       COALESCE(SUM(promptTokens), 0) as prompt,
+                       COALESCE(SUM(completionTokens), 0) as completion,
+                       COALESCE(SUM(cachedReadTokens) + SUM(cachedWriteTokens), 0) as cached,
+                       COALESCE(SUM(reasoningTokens), 0) as reasoning,
+                       COUNT(DISTINCT sessionID) as sessionCount
+                FROM usage_events
+                WHERE observedAt >= date('now', '-\(days) days')
+                GROUP BY date(observedAt)
+                ORDER BY day DESC
+                """)
+
+            return rows.compactMap { row -> DailySummary? in
+                guard let dayString: String = row["day"] else { return nil }
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyy-MM-dd"
+                guard let date = formatter.date(from: dayString) else { return nil }
+                return DailySummary(
+                    date: date,
+                    totalTokens: row["total"],
+                    promptTokens: row["prompt"],
+                    completionTokens: row["completion"],
+                    cachedTokens: row["cached"],
+                    reasoningTokens: row["reasoning"],
+                    sessionCount: row["sessionCount"]
+                )
+            }
+        }
+    }
+
+    func sessionsForDate(_ date: Date) throws -> [SessionSummary] {
+        let calendar = Calendar.current
+        let startOfDay = calendar.startOfDay(for: date)
+        let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay)!
+
+        return try dbPool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT sessionID, source, projectName, model, agent, sessionTitle,
+                       COALESCE(SUM(totalTokens), 0) as totalTokens,
+                       COALESCE(SUM(promptTokens), 0) as promptTokens,
+                       COALESCE(SUM(completionTokens), 0) as completionTokens,
+                       COALESCE(SUM(cachedReadTokens) + SUM(cachedWriteTokens), 0) as cachedTokens,
+                       COALESCE(SUM(reasoningTokens), 0) as reasoningTokens,
+                       COUNT(*) as eventCount,
+                       MIN(observedAt) as firstSeen,
+                       MAX(observedAt) as lastSeen
+                FROM usage_events
+                WHERE sessionID IS NOT NULL
+                  AND observedAt >= ? AND observedAt < ?
+                GROUP BY sessionID ORDER BY lastSeen DESC
+                """, arguments: [startOfDay, endOfDay])
+
+            return rows.map { row in
+                SessionSummary(
+                    id: row["sessionID"],
+                    source: UsageEvent.Source(rawValue: row["source"] as String) ?? .opencode,
+                    title: row["sessionTitle"],
                     projectName: row["projectName"],
                     model: row["model"],
                     agent: row["agent"],

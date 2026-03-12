@@ -207,11 +207,14 @@ final class RooCodeReader {
             let timestamp = request.ts ?? task.ts
             let observedAt = Date(timeIntervalSince1970: Double(timestamp) / 1000.0)
 
+            let sessionTitle = task.task
+
             let event = UsageEvent(
                 id: "\(task.id)-\(index)",
                 observedAt: observedAt,
                 source: .roo,
                 sessionID: task.id,
+                sessionTitle: sessionTitle,
                 requestID: "\(task.id)-\(index)",
                 projectName: projectName,
                 repoPath: task.workspace,

@@ -15,4 +15,15 @@ struct SessionSummary: Identifiable {
     let eventCount: Int
     let firstSeen: Date
     let lastSeen: Date
+
+    var displayName: String {
+        if let title = title, !title.isEmpty {
+            let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.count > 50 {
+                return String(trimmed.prefix(47)) + "..."
+            }
+            return trimmed
+        }
+        return projectName ?? id
+    }
 }

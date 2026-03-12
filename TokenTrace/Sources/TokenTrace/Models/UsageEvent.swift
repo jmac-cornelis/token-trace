@@ -7,6 +7,7 @@ struct UsageEvent: Codable, FetchableRecord, PersistableRecord, Identifiable {
     var observedAt: Date
     var source: Source
     var sessionID: String?
+    var sessionTitle: String?
     var requestID: String?
     var projectName: String?
     var repoPath: String?

@@ -4,6 +4,7 @@ struct MenuBarDropdown: View {
     @EnvironmentObject var usageStore: UsageStore
     @EnvironmentObject var collector: CollectorService
     @State private var expandedSessionID: String?
+    @State private var expandedDay: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -24,6 +25,10 @@ struct MenuBarDropdown: View {
             Divider().padding(.horizontal, 12)
 
             recentSessionsSection
+
+            Divider().padding(.horizontal, 12)
+
+            historySection
 
             Divider().padding(.horizontal, 12)
 
@@ -197,18 +202,26 @@ struct MenuBarDropdown: View {
                         .frame(width: 6, height: 6)
 
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(session.projectName ?? session.id)
+                        Text(session.displayName)
                             .font(.subheadline)
                             .lineLimit(1)
                         HStack(spacing: 4) {
+                            if let project = session.projectName {
+                                Text(project)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                Text("·")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
                             if let model = session.model {
                                 Text(model)
                                     .font(.caption2)
                                     .foregroundStyle(.tertiary)
+                                Text("·")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
                             }
-                            Text("·")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
                             Text(UsageStore.formatRelativeTime(session.lastSeen))
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
@@ -269,6 +282,109 @@ struct MenuBarDropdown: View {
                 .font(.caption2)
                 .monospacedDigit()
                 .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var historySection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("HISTORY")
+                .font(.caption2)
+                .fontWeight(.medium)
+                .foregroundStyle(.tertiary)
+
+            let pastDays = usageStore.dailySummaries.filter { !$0.isToday }
+
+            if pastDays.isEmpty {
+                Text("No history yet")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .padding(.vertical, 4)
+            } else {
+                ForEach(pastDays.prefix(7)) { day in
+                    dayRow(day)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    private func dayRow(_ day: DailySummary) -> some View {
+        let isExpanded = expandedDay == day.id
+        return VStack(alignment: .leading, spacing: 0) {
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    if isExpanded {
+                        expandedDay = nil
+                    } else {
+                        expandedDay = day.id
+                        usageStore.loadSessionsForDate(day.date)
+                    }
+                }
+            }) {
+                HStack {
+                    Text(day.formattedDate)
+                        .font(.subheadline)
+                    Spacer()
+                    Text("\(day.sessionCount)s")
+                        .font(.caption2)
+                        .foregroundStyle(.quaternary)
+                    Text(UsageStore.formatTokens(day.totalTokens))
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        HStack(spacing: 3) {
+                            Text("In")
+                                .font(.caption2)
+                                .foregroundStyle(.quaternary)
+                            Text(UsageStore.formatTokens(day.promptTokens))
+                                .font(.caption2)
+                                .monospacedDigit()
+                                .foregroundStyle(.tertiary)
+                        }
+                        HStack(spacing: 3) {
+                            Text("Out")
+                                .font(.caption2)
+                                .foregroundStyle(.quaternary)
+                            Text(UsageStore.formatTokens(day.completionTokens))
+                                .font(.caption2)
+                                .monospacedDigit()
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .padding(.top, 4)
+
+                    ForEach(usageStore.selectedDaySessions) { session in
+                        HStack {
+                            Circle()
+                                .fill(session.source == .opencode ? Color.blue : Color.purple)
+                                .frame(width: 5, height: 5)
+                            Text(session.displayName)
+                                .font(.caption2)
+                                .lineLimit(1)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(UsageStore.formatTokens(session.totalTokens))
+                                .font(.caption2)
+                                .monospacedDigit()
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                .padding(.leading, 4)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
     }
 

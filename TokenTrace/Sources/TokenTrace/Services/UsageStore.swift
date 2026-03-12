@@ -21,6 +21,8 @@ final class UsageStore: ObservableObject {
     // MARK: – Sessions & Metadata
 
     @Published var recentSessions: [SessionSummary] = []
+    @Published var dailySummaries: [DailySummary] = []
+    @Published var selectedDaySessions: [SessionSummary] = []
     @Published var lastRefreshTime: Date = Date()
 
     // MARK: – Source Health
@@ -48,6 +50,7 @@ final class UsageStore: ObservableObject {
             openCodeTokens = summary.bySource[.opencode] ?? 0
             rooCodeTokens = summary.bySource[.roo] ?? 0
             recentSessions = try db.recentSessions(limit: 10)
+            dailySummaries = try db.dailySummaries(days: 14)
             lastRefreshTime = Date()
         } catch {
             print("[UsageStore] Refresh error: \(error)")
@@ -63,6 +66,14 @@ final class UsageStore: ObservableObject {
             return String(format: "%.1fk", Double(count) / 1_000)
         } else {
             return "\(count)"
+        }
+    }
+
+    func loadSessionsForDate(_ date: Date) {
+        do {
+            selectedDaySessions = try db.sessionsForDate(date)
+        } catch {
+            print("[UsageStore] Failed to load sessions for date: \(error)")
         }
     }
 

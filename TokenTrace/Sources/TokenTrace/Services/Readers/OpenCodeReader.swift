@@ -113,11 +113,14 @@ final class OpenCodeReader {
 
                     let observedAt = Date(timeIntervalSince1970: Double(timeCreated) / 1000.0)
 
+                    let sessionTitle: String? = row["session_title"]
+
                     let event = UsageEvent(
                         id: messageId,
                         observedAt: observedAt,
                         source: .opencode,
                         sessionID: sessionId,
+                        sessionTitle: sessionTitle,
                         requestID: messageId,
                         projectName: projectName,
                         repoPath: repoPath,
