@@ -18,6 +18,8 @@ final class CollectorService: ObservableObject {
 
     var pollInterval: TimeInterval = 5.0
 
+    private var settingsCancellable: AnyCancellable?
+
     init(db: DatabaseManager = .shared, usageStore: UsageStore) {
         self.db = db
         self.openCodeReader = OpenCodeReader()
@@ -25,6 +27,14 @@ final class CollectorService: ObservableObject {
         self.codexReader = CodexReader()
         self.openclawReader = OpenclawReader()
         self.usageStore = usageStore
+
+        settingsCancellable = SettingsManager.shared.$dataSourceMode
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.usageStore.refresh()
+                }
+            }
     }
 
     // MARK: – Lifecycle
@@ -55,11 +65,17 @@ final class CollectorService: ObservableObject {
     private func collect() async {
         guard !isPaused else { return }
         collectError = nil
-        await collectFromOpenCode()
-        await collectFromRooCode()
-        await collectFromCodex()
-        await collectFromOpenclaw()
-        usageStore.refresh()
+
+        let mode = SettingsManager.shared.dataSourceMode
+        if mode == .local {
+            await collectFromOpenCode()
+            await collectFromRooCode()
+            await collectFromCodex()
+            await collectFromOpenclaw()
+            usageStore.refresh()
+        } else if mode == .grafana {
+            usageStore.refresh()
+        }
         lastCollectTime = Date()
     }
 

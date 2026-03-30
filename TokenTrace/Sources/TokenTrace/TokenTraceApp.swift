@@ -25,6 +25,7 @@ struct TokenTraceApp: App {
             MenuBarDropdown()
                 .environmentObject(usageStore)
                 .environmentObject(collector)
+                .environmentObject(SettingsManager.shared)
                 .onAppear { collector.start() }
         } label: {
             MenuBarIcon(usageStore: usageStore)

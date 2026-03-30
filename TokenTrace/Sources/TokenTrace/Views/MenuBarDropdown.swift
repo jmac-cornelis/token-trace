@@ -5,6 +5,12 @@ struct MenuBarDropdown: View {
     @EnvironmentObject var collector: CollectorService
     @State private var expandedSessionID: String?
     @State private var expandedDay: String?
+    @State private var showCostEstimate: Bool = false
+    @State private var showSources: Bool = false
+    @State private var showBreakdown: Bool = false
+    @State private var showRecentSessions: Bool = false
+    @State private var showHistory: Bool = false
+    @State private var showSettings: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -16,8 +22,13 @@ struct MenuBarDropdown: View {
 
             Divider().padding(.horizontal, 12)
 
-            UsageChartView()
-                .environmentObject(usageStore)
+            if SettingsManager.shared.showCostEstimates {
+                costEstimateSection
+
+                Divider().padding(.horizontal, 12)
+            }
+
+            usageChartSection
 
             Divider().padding(.horizontal, 12)
 
@@ -34,6 +45,10 @@ struct MenuBarDropdown: View {
             Divider().padding(.horizontal, 12)
 
             historySection
+
+            Divider().padding(.horizontal, 12)
+
+            settingsSection
 
             Divider().padding(.horizontal, 12)
 
@@ -61,38 +76,86 @@ struct MenuBarDropdown: View {
 
     private var todaySummarySection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("TODAY")
-                .font(.caption2)
-                .fontWeight(.medium)
-                .foregroundStyle(.tertiary)
-
             HStack(alignment: .firstTextBaseline) {
-                Text(UsageStore.formatTokens(usageStore.todayTotalTokens))
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                Text("tokens")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                Text("TODAY")
+                    .font(.caption2)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.tertiary)
+                Text(usageStore.dataSourceLabel)
+                    .font(.system(size: 8))
+                    .foregroundStyle(.quaternary)
             }
 
-            HStack(spacing: 12) {
-                HStack(spacing: 4) {
-                    Text("In")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Text(UsageStore.formatTokens(usageStore.todayPromptTokens))
-                        .font(.caption)
-                        .monospacedDigit()
+            if usageStore.isLoadingGrafana && usageStore.todayTotalTokens == 0 {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Fetching from Grafana…")
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
-                HStack(spacing: 4) {
-                    Text("Out")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Text(UsageStore.formatTokens(usageStore.todayCompletionTokens))
-                        .font(.caption)
+                .frame(height: 34)
+            } else {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(UsageStore.formatTokens(usageStore.todayTotalTokens))
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
                         .monospacedDigit()
+                    Text("tokens")
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 12) {
+                    HStack(spacing: 4) {
+                        Text("In")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                        Text(UsageStore.formatTokens(usageStore.todayPromptTokens))
+                            .font(.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 4) {
+                        Text("Out")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                        Text(UsageStore.formatTokens(usageStore.todayCompletionTokens))
+                            .font(.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if let billable = usageStore.todayBillableTokens {
+                    HStack(spacing: 12) {
+                        HStack(spacing: 4) {
+                            Text("Billable")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                            Text(UsageStore.formatTokens(Int(billable.totalBillableEquivalent.rounded())))
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .monospacedDigit()
+                                .foregroundStyle(.orange)
+                        }
+                        if billable.cacheSavingsPercent > 0 {
+                            Text("\(Int(billable.cacheSavingsPercent))% saved")
+                                .font(.caption2)
+                                .foregroundStyle(.green)
+                        }
+                        if usageStore.todayEstimatedCost > 0 {
+                            HStack(spacing: 4) {
+                                Text("≈")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                Text(CostEstimator.formatCost(usageStore.todayEstimatedCost))
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                    .monospacedDigit()
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -102,35 +165,51 @@ struct MenuBarDropdown: View {
 
     private var sourceBreakdownSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("SOURCES")
-                .font(.caption2)
-                .fontWeight(.medium)
-                .foregroundStyle(.tertiary)
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    showSources.toggle()
+                }
+            }) {
+                HStack {
+                    Text("SOURCES")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(showSources ? 90 : 0))
+                }
+            }
+            .buttonStyle(.plain)
 
-            sourceRow(
-                name: "OpenCode",
-                tokens: usageStore.openCodeTokens,
-                isHealthy: usageStore.openCodeHealthy,
-                icon: "terminal.fill"
-            )
-            sourceRow(
-                name: "Roo Code",
-                tokens: usageStore.rooCodeTokens,
-                isHealthy: usageStore.rooCodeHealthy,
-                icon: "hammer.fill"
-            )
-            sourceRow(
-                name: "Codex",
-                tokens: usageStore.codexTokens,
-                isHealthy: usageStore.codexHealthy,
-                icon: "sparkle"
-            )
-            sourceRow(
-                name: "Openclaw",
-                tokens: usageStore.openclawTokens,
-                isHealthy: usageStore.openclawHealthy,
-                icon: "network"
-            )
+            if showSources {
+                sourceRow(
+                    name: "OpenCode",
+                    tokens: usageStore.openCodeTokens,
+                    isHealthy: usageStore.openCodeHealthy,
+                    icon: "terminal.fill"
+                )
+                sourceRow(
+                    name: "Roo Code",
+                    tokens: usageStore.rooCodeTokens,
+                    isHealthy: usageStore.rooCodeHealthy,
+                    icon: "hammer.fill"
+                )
+                sourceRow(
+                    name: "Codex",
+                    tokens: usageStore.codexTokens,
+                    isHealthy: usageStore.codexHealthy,
+                    icon: "sparkle"
+                )
+                sourceRow(
+                    name: "Openclaw",
+                    tokens: usageStore.openclawTokens,
+                    isHealthy: usageStore.openclawHealthy,
+                    icon: "network"
+                )
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -152,18 +231,97 @@ struct MenuBarDropdown: View {
         }
     }
 
+    private var costEstimateSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    showCostEstimate.toggle()
+                }
+            }) {
+                HStack {
+                    Text("ESTIMATED COST")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(showCostEstimate ? 90 : 0))
+                }
+            }
+            .buttonStyle(.plain)
+
+            if showCostEstimate {
+                CostEstimateView()
+                    .environmentObject(usageStore)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    private var usageChartSection: some View {
+        UsageChartView()
+            .environmentObject(usageStore)
+    }
+
     private var tokenBreakdownSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("BREAKDOWN")
-                .font(.caption2)
-                .fontWeight(.medium)
-                .foregroundStyle(.tertiary)
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    showBreakdown.toggle()
+                }
+            }) {
+                HStack {
+                    Text("BREAKDOWN")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(showBreakdown ? 90 : 0))
+                }
+            }
+            .buttonStyle(.plain)
 
-            breakdownRow(label: "Prompt", value: usageStore.todayPromptTokens)
-            breakdownRow(label: "Completion", value: usageStore.todayCompletionTokens)
-            breakdownRow(label: "Cached", value: usageStore.todayCachedTokens)
-            if usageStore.todayReasoningTokens > 0 {
-                breakdownRow(label: "Reasoning", value: usageStore.todayReasoningTokens)
+            if showBreakdown {
+                breakdownRow(label: "Prompt", value: usageStore.todayPromptTokens)
+                breakdownRow(label: "Completion", value: usageStore.todayCompletionTokens)
+                breakdownRow(label: "Cached", value: usageStore.todayCachedTokens)
+                if usageStore.todayCachedReadTokens > 0 || usageStore.todayCachedWriteTokens > 0 {
+                    HStack(spacing: 12) {
+                        HStack(spacing: 3) {
+                            Text("Read")
+                                .font(.caption2)
+                                .foregroundStyle(.quaternary)
+                            Text(UsageStore.formatTokens(usageStore.todayCachedReadTokens))
+                                .font(.caption2)
+                                .monospacedDigit()
+                                .foregroundStyle(.tertiary)
+                        }
+                        HStack(spacing: 3) {
+                            Text("Write")
+                                .font(.caption2)
+                                .foregroundStyle(.quaternary)
+                            Text(UsageStore.formatTokens(usageStore.todayCachedWriteTokens))
+                                .font(.caption2)
+                                .monospacedDigit()
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .padding(.leading, 12)
+                }
+                if usageStore.todayReasoningTokens > 0 {
+                    breakdownRow(label: "Reasoning", value: usageStore.todayReasoningTokens)
+                }
+                if let billable = usageStore.todayBillableTokens {
+                    Divider().padding(.vertical, 2)
+                    breakdownRow(label: "Billable Input", value: Int(billable.billableInputEquivalent.rounded()))
+                    breakdownRow(label: "Billable Total", value: Int(billable.totalBillableEquivalent.rounded()))
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -185,19 +343,35 @@ struct MenuBarDropdown: View {
 
     private var recentSessionsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("RECENT SESSIONS")
-                .font(.caption2)
-                .fontWeight(.medium)
-                .foregroundStyle(.tertiary)
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    showRecentSessions.toggle()
+                }
+            }) {
+                HStack {
+                    Text("RECENT SESSIONS")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(showRecentSessions ? 90 : 0))
+                }
+            }
+            .buttonStyle(.plain)
 
-            if usageStore.recentSessions.isEmpty {
-                Text("No sessions yet")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .padding(.vertical, 4)
-            } else {
-                ForEach(usageStore.recentSessions.prefix(5)) { session in
-                    sessionRow(session)
+            if showRecentSessions {
+                if usageStore.recentSessions.isEmpty {
+                    Text("No sessions yet")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .padding(.vertical, 4)
+                } else {
+                    ForEach(usageStore.recentSessions.prefix(5)) { session in
+                        sessionRow(session)
+                    }
                 }
             }
         }
@@ -220,6 +394,13 @@ struct MenuBarDropdown: View {
                         Text(session.displayName)
                             .font(.subheadline)
                             .lineLimit(1)
+                        if let prompt = session.lastPrompt, !prompt.isEmpty {
+                            Text(prompt.trimmingCharacters(in: .whitespacesAndNewlines))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
                         HStack(spacing: 4) {
                             if let project = session.projectName {
                                 Text(project)
@@ -268,6 +449,34 @@ struct MenuBarDropdown: View {
                     if session.reasoningTokens > 0 {
                         sessionDetailRow("Reasoning", session.reasoningTokens)
                     }
+                    let sb = session.billableTokens
+                    if sb.cacheSavingsPercent > 0 {
+                        HStack {
+                            Text("Billable")
+                                .font(.caption2)
+                                .foregroundStyle(.quaternary)
+                            Spacer()
+                            Text(UsageStore.formatTokens(Int(sb.totalBillableEquivalent.rounded())))
+                                .font(.caption2)
+                                .monospacedDigit()
+                                .foregroundStyle(.orange)
+                            Text("(\(Int(sb.cacheSavingsPercent))% saved)")
+                                .font(.caption2)
+                                .foregroundStyle(.green)
+                        }
+                    }
+                    if session.estimatedCostUSD > 0 {
+                        HStack {
+                            Text("Cost")
+                                .font(.caption2)
+                                .foregroundStyle(.quaternary)
+                            Spacer()
+                            Text(CostEstimator.formatCost(session.estimatedCostUSD))
+                                .font(.caption2)
+                                .monospacedDigit()
+                                .foregroundStyle(.orange)
+                        }
+                    }
                     HStack(spacing: 4) {
                         Text("\(session.eventCount) requests")
                             .font(.caption2)
@@ -302,21 +511,37 @@ struct MenuBarDropdown: View {
 
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("HISTORY")
-                .font(.caption2)
-                .fontWeight(.medium)
-                .foregroundStyle(.tertiary)
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    showHistory.toggle()
+                }
+            }) {
+                HStack {
+                    Text("HISTORY")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(showHistory ? 90 : 0))
+                }
+            }
+            .buttonStyle(.plain)
 
-            let pastDays = usageStore.dailySummaries.filter { !$0.isToday }
+            if showHistory {
+                let pastDays = usageStore.dailySummaries.filter { !$0.isToday }
 
-            if pastDays.isEmpty {
-                Text("No history yet")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .padding(.vertical, 4)
-            } else {
-                ForEach(pastDays.prefix(7)) { day in
-                    dayRow(day)
+                if pastDays.isEmpty {
+                    Text("No history yet")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .padding(.vertical, 4)
+                } else {
+                    ForEach(pastDays.prefix(7)) { day in
+                        dayRow(day)
+                    }
                 }
             }
         }
@@ -391,6 +616,34 @@ struct MenuBarDropdown: View {
                     }
                     .padding(.top, 4)
 
+                    let db = day.billableTokens
+                    if db.cacheSavingsPercent > 0 || day.estimatedCostUSD > 0 {
+                        HStack(spacing: 12) {
+                            if db.cacheSavingsPercent > 0 {
+                                HStack(spacing: 3) {
+                                    Text("Billable")
+                                        .font(.caption2)
+                                        .foregroundStyle(.quaternary)
+                                    Text(UsageStore.formatTokens(Int(db.totalBillableEquivalent.rounded())))
+                                        .font(.caption2)
+                                        .monospacedDigit()
+                                        .foregroundStyle(.orange)
+                                }
+                            }
+                            if day.estimatedCostUSD > 0 {
+                                HStack(spacing: 3) {
+                                    Text("≈")
+                                        .font(.caption2)
+                                        .foregroundStyle(.quaternary)
+                                    Text(CostEstimator.formatCost(day.estimatedCostUSD))
+                                        .font(.caption2)
+                                        .monospacedDigit()
+                                        .foregroundStyle(.orange)
+                                }
+                            }
+                        }
+                    }
+
                     let sourceTotals = usageStore.selectedDaySourceTotals
                     if !sourceTotals.isEmpty {
                         HStack(spacing: 8) {
@@ -455,6 +708,35 @@ struct MenuBarDropdown: View {
         case .codex: return "Cdx"
         case .openclaw: return "OClw"
         }
+    }
+
+    private var settingsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    showSettings.toggle()
+                }
+            }) {
+                HStack {
+                    Text("SETTINGS")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(showSettings ? 90 : 0))
+                }
+            }
+            .buttonStyle(.plain)
+
+            if showSettings {
+                SettingsView()
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
     }
 
     private var actionsSection: some View {

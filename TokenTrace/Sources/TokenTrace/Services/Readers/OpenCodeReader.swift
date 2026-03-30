@@ -63,7 +63,14 @@ final class OpenCodeReader {
                         json_extract(m.data, '$.tokens.reasoning') AS tokens_reasoning,
                         json_extract(m.data, '$.tokens.cache.read') AS cache_read,
                         json_extract(m.data, '$.tokens.cache.write') AS cache_write,
-                        json_extract(m.data, '$.cost') AS cost
+                        json_extract(m.data, '$.cost') AS cost,
+                        (SELECT json_extract(pt.data, '$.text')
+                         FROM part pt
+                         JOIN message um ON pt.message_id = um.id
+                         WHERE um.session_id = m.session_id
+                           AND json_extract(um.data, '$.role') = 'user'
+                         ORDER BY um.time_created DESC LIMIT 1
+                        ) AS last_prompt
                     FROM message m
                     JOIN session s ON m.session_id = s.id
                     LEFT JOIN project p ON s.project_id = p.id
@@ -114,6 +121,7 @@ final class OpenCodeReader {
                     let observedAt = Date(timeIntervalSince1970: Double(timeCreated) / 1000.0)
 
                     let sessionTitle: String? = row["session_title"]
+                    let lastPrompt: String? = row["last_prompt"]
 
                     let event = UsageEvent(
                         id: messageId,
@@ -133,7 +141,8 @@ final class OpenCodeReader {
                         cachedWriteTokens: cacheWrite,
                         reasoningTokens: tokensReasoning,
                         totalTokens: tokensTotal,
-                        estimatedCostUSD: cost
+                        estimatedCostUSD: cost,
+                        lastPrompt: lastPrompt
                     )
 
                     events.append(event)

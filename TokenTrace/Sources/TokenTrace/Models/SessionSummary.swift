@@ -12,9 +12,23 @@ struct SessionSummary: Identifiable {
     let completionTokens: Int
     let cachedTokens: Int
     let reasoningTokens: Int
+    let cachedReadTokens: Int
+    let cachedWriteTokens: Int
+    let estimatedCostUSD: Double
     let eventCount: Int
     let firstSeen: Date
     let lastSeen: Date
+    let lastPrompt: String?
+
+    var billableTokens: BillableTokens {
+        CostEstimator.computeBillableTokens(
+            promptTokens: promptTokens,
+            completionTokens: completionTokens,
+            cachedReadTokens: cachedReadTokens,
+            cachedWriteTokens: cachedWriteTokens,
+            reasoningTokens: reasoningTokens
+        )
+    }
 
     enum ActivityStatus {
         case active

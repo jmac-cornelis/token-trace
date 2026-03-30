@@ -8,6 +8,19 @@ struct DailySummary: Identifiable {
     let cachedTokens: Int
     let reasoningTokens: Int
     let sessionCount: Int
+    let cachedReadTokens: Int
+    let cachedWriteTokens: Int
+    let estimatedCostUSD: Double
+
+    var billableTokens: BillableTokens {
+        CostEstimator.computeBillableTokens(
+            promptTokens: promptTokens,
+            completionTokens: completionTokens,
+            cachedReadTokens: cachedReadTokens,
+            cachedWriteTokens: cachedWriteTokens,
+            reasoningTokens: reasoningTokens
+        )
+    }
 
     var id: String {
         let formatter = DateFormatter()

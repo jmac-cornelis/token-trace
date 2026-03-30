@@ -86,10 +86,15 @@ final class CodexReader {
                         return trimmed.count > 80 ? String(trimmed.prefix(77)) + "..." : trimmed
                     }
 
-                    let observedAt = Date(timeIntervalSince1970: Double(updatedAt) / 1000.0)
+                    let observedAt = Date(timeIntervalSince1970: Double(updatedAt))
 
                     // Try to get granular token breakdown from rollout JSONL
                     let rolloutTokens = parseRolloutFile(rolloutPath: rolloutPath, threadId: threadId)
+
+                    let totalTokens = tokensUsed
+                    let outputTokens = rolloutTokens.hasData ? rolloutTokens.output : 0
+                    let reasoningTok = rolloutTokens.hasData ? rolloutTokens.reasoning : 0
+                    let inputTokens = rolloutTokens.hasData ? max(0, totalTokens - outputTokens - reasoningTok) : 0
 
                     let event = UsageEvent(
                         id: "codex-\(threadId)",
@@ -103,13 +108,14 @@ final class CodexReader {
                         provider: modelProvider,
                         model: modelProvider,
                         agent: nil,
-                        promptTokens: rolloutTokens.input,
-                        completionTokens: rolloutTokens.output,
+                        promptTokens: inputTokens,
+                        completionTokens: outputTokens,
                         cachedReadTokens: 0,
                         cachedWriteTokens: 0,
-                        reasoningTokens: rolloutTokens.reasoning,
-                        totalTokens: rolloutTokens.hasData ? rolloutTokens.total : tokensUsed,
-                        estimatedCostUSD: 0.0
+                        reasoningTokens: reasoningTok,
+                        totalTokens: totalTokens,
+                        estimatedCostUSD: 0.0,
+                        lastPrompt: firstMessage
                     )
 
                     events.append(event)
@@ -255,7 +261,7 @@ final class CodexReader {
 
                 let lastTimeMs: Int64? = row?["last_time"]
                 let eventCount: Int = row?["event_count"] ?? 0
-                let lastDate = lastTimeMs.map { Date(timeIntervalSince1970: Double($0) / 1000.0) }
+                let lastDate = lastTimeMs.map { Date(timeIntervalSince1970: Double($0)) }
                 return (lastDate, eventCount)
             }
 

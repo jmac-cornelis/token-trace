@@ -67,6 +67,12 @@ final class DatabaseManager {
             }
         }
 
+        migrator.registerMigration("v3-last-prompt") { db in
+            try db.alter(table: "usage_events") { t in
+                t.add(column: "lastPrompt", .text)
+            }
+        }
+
         return migrator
     }
 
@@ -75,14 +81,14 @@ final class DatabaseManager {
     func insertEvents(_ events: [UsageEvent]) throws {
         try dbPool.write { db in
             for event in events {
-                try event.insert(db)
+                try event.save(db)
             }
         }
     }
 
     // MARK: - Queries
 
-    func todaySummary() throws -> (total: Int, prompt: Int, completion: Int, cached: Int, reasoning: Int, bySource: [UsageEvent.Source: Int]) {
+    func todaySummary() throws -> (total: Int, prompt: Int, completion: Int, cached: Int, reasoning: Int, cachedRead: Int, cachedWrite: Int, estimatedCost: Double, bySource: [UsageEvent.Source: Int]) {
         let startOfDay = Calendar.current.startOfDay(for: Date())
         return try dbPool.read { db in
             let rows = try Row.fetchAll(db, sql: """
@@ -90,13 +96,17 @@ final class DatabaseManager {
                        COALESCE(SUM(totalTokens), 0) as total,
                        COALESCE(SUM(promptTokens), 0) as prompt,
                        COALESCE(SUM(completionTokens), 0) as completion,
+                       COALESCE(SUM(cachedReadTokens), 0) as cachedRead,
+                       COALESCE(SUM(cachedWriteTokens), 0) as cachedWrite,
                        COALESCE(SUM(cachedReadTokens) + SUM(cachedWriteTokens), 0) as cached,
-                       COALESCE(SUM(reasoningTokens), 0) as reasoning
+                       COALESCE(SUM(reasoningTokens), 0) as reasoning,
+                       COALESCE(SUM(estimatedCostUSD), 0) as cost
                 FROM usage_events WHERE observedAt >= ?
                 GROUP BY source
                 """, arguments: [startOfDay])
 
             var totalAll = 0, promptAll = 0, completionAll = 0, cachedAll = 0, reasoningAll = 0
+            var cachedReadAll = 0, cachedWriteAll = 0, costAll = 0.0
             var bySource: [UsageEvent.Source: Int] = [:]
 
             for row in rows {
@@ -107,27 +117,36 @@ final class DatabaseManager {
                 completionAll += row["completion"]
                 cachedAll += row["cached"]
                 reasoningAll += row["reasoning"]
+                cachedReadAll += row["cachedRead"] as Int
+                cachedWriteAll += row["cachedWrite"] as Int
+                costAll += row["cost"] as Double
                 bySource[source] = total
             }
 
-            return (totalAll, promptAll, completionAll, cachedAll, reasoningAll, bySource)
+            return (totalAll, promptAll, completionAll, cachedAll, reasoningAll, cachedReadAll, cachedWriteAll, costAll, bySource)
         }
     }
 
     func recentSessions(limit: Int = 10) throws -> [SessionSummary] {
         return try dbPool.read { db in
             let rows = try Row.fetchAll(db, sql: """
-                SELECT sessionID, source, projectName, model, agent, sessionTitle,
-                       COALESCE(SUM(totalTokens), 0) as totalTokens,
-                       COALESCE(SUM(promptTokens), 0) as promptTokens,
-                       COALESCE(SUM(completionTokens), 0) as completionTokens,
-                       COALESCE(SUM(cachedReadTokens) + SUM(cachedWriteTokens), 0) as cachedTokens,
-                       COALESCE(SUM(reasoningTokens), 0) as reasoningTokens,
+                SELECT e.sessionID, e.source, e.projectName, e.model, e.agent, e.sessionTitle,
+                       COALESCE(SUM(e.totalTokens), 0) as totalTokens,
+                       COALESCE(SUM(e.promptTokens), 0) as promptTokens,
+                       COALESCE(SUM(e.completionTokens), 0) as completionTokens,
+                       COALESCE(SUM(e.cachedReadTokens) + SUM(e.cachedWriteTokens), 0) as cachedTokens,
+                       COALESCE(SUM(e.reasoningTokens), 0) as reasoningTokens,
+                       COALESCE(SUM(e.cachedReadTokens), 0) as cachedReadTokens,
+                       COALESCE(SUM(e.cachedWriteTokens), 0) as cachedWriteTokens,
+                       COALESCE(SUM(e.estimatedCostUSD), 0) as estimatedCostUSD,
                        COUNT(*) as eventCount,
-                       MIN(observedAt) as firstSeen,
-                       MAX(observedAt) as lastSeen
-                FROM usage_events WHERE sessionID IS NOT NULL
-                GROUP BY sessionID ORDER BY lastSeen DESC LIMIT ?
+                       MIN(e.observedAt) as firstSeen,
+                       MAX(e.observedAt) as lastSeen,
+                       (SELECT lp.lastPrompt FROM usage_events lp
+                        WHERE lp.sessionID = e.sessionID AND lp.lastPrompt IS NOT NULL
+                        ORDER BY lp.observedAt DESC LIMIT 1) as lastPrompt
+                FROM usage_events e WHERE e.sessionID IS NOT NULL
+                GROUP BY e.sessionID ORDER BY lastSeen DESC LIMIT ?
                 """, arguments: [limit])
 
             return rows.map { row in
@@ -143,9 +162,13 @@ final class DatabaseManager {
                     completionTokens: row["completionTokens"],
                     cachedTokens: row["cachedTokens"],
                     reasoningTokens: row["reasoningTokens"],
+                    cachedReadTokens: row["cachedReadTokens"],
+                    cachedWriteTokens: row["cachedWriteTokens"],
+                    estimatedCostUSD: row["estimatedCostUSD"],
                     eventCount: row["eventCount"],
                     firstSeen: row["firstSeen"],
-                    lastSeen: row["lastSeen"]
+                    lastSeen: row["lastSeen"],
+                    lastPrompt: row["lastPrompt"]
                 )
             }
         }
@@ -162,6 +185,9 @@ final class DatabaseManager {
                        COALESCE(SUM(completionTokens), 0) as completion,
                        COALESCE(SUM(cachedReadTokens) + SUM(cachedWriteTokens), 0) as cached,
                        COALESCE(SUM(reasoningTokens), 0) as reasoning,
+                       COALESCE(SUM(cachedReadTokens), 0) as cachedRead,
+                       COALESCE(SUM(cachedWriteTokens), 0) as cachedWrite,
+                       COALESCE(SUM(estimatedCostUSD), 0) as cost,
                        COUNT(DISTINCT sessionID) as sessionCount
                 FROM usage_events
                 WHERE observedAt >= date('now', '-\(days) days')
@@ -181,7 +207,10 @@ final class DatabaseManager {
                     completionTokens: row["completion"],
                     cachedTokens: row["cached"],
                     reasoningTokens: row["reasoning"],
-                    sessionCount: row["sessionCount"]
+                    sessionCount: row["sessionCount"],
+                    cachedReadTokens: row["cachedRead"],
+                    cachedWriteTokens: row["cachedWrite"],
+                    estimatedCostUSD: row["cost"]
                 )
             }
         }
@@ -217,19 +246,25 @@ final class DatabaseManager {
 
         return try dbPool.read { db in
             let rows = try Row.fetchAll(db, sql: """
-                SELECT sessionID, source, projectName, model, agent, sessionTitle,
-                       COALESCE(SUM(totalTokens), 0) as totalTokens,
-                       COALESCE(SUM(promptTokens), 0) as promptTokens,
-                       COALESCE(SUM(completionTokens), 0) as completionTokens,
-                       COALESCE(SUM(cachedReadTokens) + SUM(cachedWriteTokens), 0) as cachedTokens,
-                       COALESCE(SUM(reasoningTokens), 0) as reasoningTokens,
+                SELECT e.sessionID, e.source, e.projectName, e.model, e.agent, e.sessionTitle,
+                       COALESCE(SUM(e.totalTokens), 0) as totalTokens,
+                       COALESCE(SUM(e.promptTokens), 0) as promptTokens,
+                       COALESCE(SUM(e.completionTokens), 0) as completionTokens,
+                       COALESCE(SUM(e.cachedReadTokens) + SUM(e.cachedWriteTokens), 0) as cachedTokens,
+                       COALESCE(SUM(e.reasoningTokens), 0) as reasoningTokens,
+                       COALESCE(SUM(e.cachedReadTokens), 0) as cachedReadTokens,
+                       COALESCE(SUM(e.cachedWriteTokens), 0) as cachedWriteTokens,
+                       COALESCE(SUM(e.estimatedCostUSD), 0) as estimatedCostUSD,
                        COUNT(*) as eventCount,
-                       MIN(observedAt) as firstSeen,
-                       MAX(observedAt) as lastSeen
-                FROM usage_events
-                WHERE sessionID IS NOT NULL
-                  AND observedAt >= ? AND observedAt < ?
-                GROUP BY sessionID ORDER BY lastSeen DESC
+                       MIN(e.observedAt) as firstSeen,
+                       MAX(e.observedAt) as lastSeen,
+                       (SELECT lp.lastPrompt FROM usage_events lp
+                        WHERE lp.sessionID = e.sessionID AND lp.lastPrompt IS NOT NULL
+                        ORDER BY lp.observedAt DESC LIMIT 1) as lastPrompt
+                FROM usage_events e
+                WHERE e.sessionID IS NOT NULL
+                  AND e.observedAt >= ? AND e.observedAt < ?
+                GROUP BY e.sessionID ORDER BY lastSeen DESC
                 """, arguments: [startOfDay, endOfDay])
 
             return rows.map { row in
@@ -245,9 +280,13 @@ final class DatabaseManager {
                     completionTokens: row["completionTokens"],
                     cachedTokens: row["cachedTokens"],
                     reasoningTokens: row["reasoningTokens"],
+                    cachedReadTokens: row["cachedReadTokens"],
+                    cachedWriteTokens: row["cachedWriteTokens"],
+                    estimatedCostUSD: row["estimatedCostUSD"],
                     eventCount: row["eventCount"],
                     firstSeen: row["firstSeen"],
-                    lastSeen: row["lastSeen"]
+                    lastSeen: row["lastSeen"],
+                    lastPrompt: row["lastPrompt"]
                 )
             }
         }
@@ -308,7 +347,7 @@ final class DatabaseManager {
         }
     }
 
-    func rangeSummary(range: ChartRange) throws -> (total: Int, prompt: Int, completion: Int, cached: Int, reasoning: Int) {
+    func rangeSummary(range: ChartRange) throws -> (total: Int, prompt: Int, completion: Int, cached: Int, reasoning: Int, cachedRead: Int, cachedWrite: Int, estimatedCost: Double) {
         return try dbPool.read { db in
             let whereClause: String
             if let days = range.days {
@@ -322,13 +361,16 @@ final class DatabaseManager {
                        COALESCE(SUM(promptTokens), 0) as prompt,
                        COALESCE(SUM(completionTokens), 0) as completion,
                        COALESCE(SUM(cachedReadTokens) + SUM(cachedWriteTokens), 0) as cached,
-                       COALESCE(SUM(reasoningTokens), 0) as reasoning
+                       COALESCE(SUM(reasoningTokens), 0) as reasoning,
+                       COALESCE(SUM(cachedReadTokens), 0) as cachedRead,
+                       COALESCE(SUM(cachedWriteTokens), 0) as cachedWrite,
+                       COALESCE(SUM(estimatedCostUSD), 0) as cost
                 FROM usage_events
                 \(whereClause)
                 """)
 
-            guard let row = row else { return (0, 0, 0, 0, 0) }
-            return (row["total"], row["prompt"], row["completion"], row["cached"], row["reasoning"])
+            guard let row = row else { return (0, 0, 0, 0, 0, 0, 0, 0.0) }
+            return (row["total"], row["prompt"], row["completion"], row["cached"], row["reasoning"], row["cachedRead"], row["cachedWrite"], row["cost"])
         }
     }
 

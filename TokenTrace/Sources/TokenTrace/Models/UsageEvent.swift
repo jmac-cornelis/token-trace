@@ -21,6 +21,7 @@ struct UsageEvent: Codable, FetchableRecord, PersistableRecord, Identifiable {
     var reasoningTokens: Int
     var totalTokens: Int
     var estimatedCostUSD: Double
+    var lastPrompt: String?
 
     enum Source: String, Codable, DatabaseValueConvertible {
         case opencode
