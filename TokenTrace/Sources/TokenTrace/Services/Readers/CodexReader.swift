@@ -68,6 +68,7 @@ final class CodexReader {
 
                 for row in rows {
                     let threadId: String = row["id"]
+                    let createdAt: Int64 = row["created_at"]
                     let updatedAt: Int64 = row["updated_at"]
                     let tokensUsed: Int = row["tokens_used"] ?? 0
                     let title: String? = row["title"]
@@ -86,39 +87,59 @@ final class CodexReader {
                         return trimmed.count > 80 ? String(trimmed.prefix(77)) + "..." : trimmed
                     }
 
-                    let observedAt = Date(timeIntervalSince1970: Double(updatedAt))
+                    let rolloutEvents = parseRolloutEvents(rolloutPath: rolloutPath, threadId: threadId)
 
-                    // Try to get granular token breakdown from rollout JSONL
-                    let rolloutTokens = parseRolloutFile(rolloutPath: rolloutPath, threadId: threadId)
+                    if rolloutEvents.isEmpty {
+                        let observedAt = Date(timeIntervalSince1970: Double(createdAt))
+                        let event = UsageEvent(
+                            id: "codex-\(threadId)",
+                            observedAt: observedAt,
+                            source: .codex,
+                            sessionID: threadId,
+                            sessionTitle: sessionTitle,
+                            requestID: nil,
+                            projectName: projectName,
+                            repoPath: cwd,
+                            provider: modelProvider,
+                            model: modelProvider,
+                            agent: nil,
+                            promptTokens: 0,
+                            completionTokens: 0,
+                            cachedReadTokens: 0,
+                            cachedWriteTokens: 0,
+                            reasoningTokens: 0,
+                            totalTokens: tokensUsed,
+                            estimatedCostUSD: 0.0,
+                            lastPrompt: firstMessage
+                        )
+                        events.append(event)
+                    } else {
+                        for (index, re) in rolloutEvents.enumerated() {
+                            let event = UsageEvent(
+                                id: "codex-\(threadId)-\(index)",
+                                observedAt: re.timestamp,
+                                source: .codex,
+                                sessionID: threadId,
+                                sessionTitle: sessionTitle,
+                                requestID: "req-\(index)",
+                                projectName: projectName,
+                                repoPath: cwd,
+                                provider: modelProvider,
+                                model: re.model ?? modelProvider,
+                                agent: nil,
+                                promptTokens: re.inputTokens,
+                                completionTokens: re.outputTokens,
+                                cachedReadTokens: re.cachedInputTokens,
+                                cachedWriteTokens: 0,
+                                reasoningTokens: re.reasoningTokens,
+                                totalTokens: re.totalTokens,
+                                estimatedCostUSD: 0.0,
+                                lastPrompt: nil
+                            )
+                            events.append(event)
+                        }
+                    }
 
-                    let totalTokens = tokensUsed
-                    let outputTokens = rolloutTokens.hasData ? rolloutTokens.output : 0
-                    let reasoningTok = rolloutTokens.hasData ? rolloutTokens.reasoning : 0
-                    let inputTokens = rolloutTokens.hasData ? max(0, totalTokens - outputTokens - reasoningTok) : 0
-
-                    let event = UsageEvent(
-                        id: "codex-\(threadId)",
-                        observedAt: observedAt,
-                        source: .codex,
-                        sessionID: threadId,
-                        sessionTitle: sessionTitle,
-                        requestID: nil,
-                        projectName: projectName,
-                        repoPath: cwd,
-                        provider: modelProvider,
-                        model: modelProvider,
-                        agent: nil,
-                        promptTokens: inputTokens,
-                        completionTokens: outputTokens,
-                        cachedReadTokens: 0,
-                        cachedWriteTokens: 0,
-                        reasoningTokens: reasoningTok,
-                        totalTokens: totalTokens,
-                        estimatedCostUSD: 0.0,
-                        lastPrompt: firstMessage
-                    )
-
-                    events.append(event)
                     latestTimestamp = String(updatedAt)
                 }
 
@@ -134,29 +155,40 @@ final class CodexReader {
 
     // MARK: - Rollout JSONL Parsing
 
-    private struct RolloutTokens {
-        var input: Int = 0
-        var output: Int = 0
-        var reasoning: Int = 0
-        var total: Int = 0
-        var hasData: Bool = false
+    private struct RolloutEvent {
+        let timestamp: Date
+        let inputTokens: Int
+        let cachedInputTokens: Int
+        let outputTokens: Int
+        let reasoningTokens: Int
+        let totalTokens: Int
+        let model: String?
     }
 
-    private func parseRolloutFile(rolloutPath: String?, threadId: String) -> RolloutTokens {
+    private func parseRolloutEvents(rolloutPath: String?, threadId: String) -> [RolloutEvent] {
         guard let path = resolveRolloutPath(rolloutPath, threadId: threadId) else {
-            return RolloutTokens()
+            return []
         }
 
         guard FileManager.default.fileExists(atPath: path) else {
-            return RolloutTokens()
+            return []
         }
 
         guard let data = FileManager.default.contents(atPath: path),
               let content = String(data: data, encoding: .utf8) else {
-            return RolloutTokens()
+            return []
         }
 
-        var tokens = RolloutTokens()
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        let isoFallback = ISO8601DateFormatter()
+        isoFallback.formatOptions = [.withInternetDateTime]
+
+        var results: [RolloutEvent] = []
+        var prevCumulativeTotal = 0
+        var currentModel: String?
+
         let lines = content.components(separatedBy: .newlines)
 
         for line in lines {
@@ -166,34 +198,61 @@ final class CodexReader {
                 continue
             }
 
-            // event_msg with token_count payload
-            guard let eventType = json["type"] as? String, eventType == "event_msg",
+            let lineType = json["type"] as? String ?? ""
+
+            if lineType == "turn_context",
+               let payload = json["payload"] as? [String: Any],
+               let model = payload["model"] as? String {
+                currentModel = model
+            }
+
+            guard lineType == "event_msg",
                   let payload = json["payload"] as? [String: Any],
                   let payloadType = payload["type"] as? String, payloadType == "token_count",
                   let info = payload["info"] as? [String: Any],
+                  let totalUsage = info["total_token_usage"] as? [String: Any],
                   let lastUsage = info["last_token_usage"] as? [String: Any] else {
                 continue
             }
 
+            let cumulativeTotal = totalUsage["total_tokens"] as? Int ?? 0
+
+            guard cumulativeTotal > prevCumulativeTotal else {
+                continue
+            }
+
+            let timestampStr = json["timestamp"] as? String ?? ""
+            let timestamp = isoFormatter.date(from: timestampStr)
+                ?? isoFallback.date(from: timestampStr)
+                ?? Date()
+
+            let inputTokens = lastUsage["input_tokens"] as? Int ?? 0
+            let cachedInput = lastUsage["cached_input_tokens"] as? Int ?? 0
             let outputTokens = lastUsage["output_tokens"] as? Int ?? 0
             let reasoningTokens = lastUsage["reasoning_output_tokens"] as? Int ?? 0
+            let lastTotal = lastUsage["total_tokens"] as? Int ?? 0
 
-            tokens.output += outputTokens
-            tokens.reasoning += reasoningTokens
-            tokens.hasData = true
+            let eventTotal = lastTotal > 0 ? lastTotal : (cumulativeTotal - prevCumulativeTotal)
+
+            results.append(RolloutEvent(
+                timestamp: timestamp,
+                inputTokens: inputTokens,
+                cachedInputTokens: cachedInput,
+                outputTokens: outputTokens,
+                reasoningTokens: reasoningTokens,
+                totalTokens: eventTotal,
+                model: currentModel
+            ))
+
+            prevCumulativeTotal = cumulativeTotal
         }
 
-        // Codex rollouts only track output/reasoning — input is inferred
-        // total from threads table is more accurate for the grand total
-        tokens.total = tokens.output + tokens.reasoning
-        // input = threads.tokens_used - output tokens (rough estimate)
-        // We leave input as 0 since rollouts don't track it directly
-
-        return tokens
+        return results
     }
 
+    // MARK: - Rollout Path Resolution
+
     private func resolveRolloutPath(_ rolloutPath: String?, threadId: String) -> String? {
-        // If rollout_path is set and non-empty, resolve it relative to codex home
         if let rp = rolloutPath, !rp.isEmpty {
             if rp.hasPrefix("/") {
                 return rp
@@ -201,14 +260,11 @@ final class CodexReader {
             return (codexHome as NSString).appendingPathComponent(rp)
         }
 
-        // No rollout path — try to find it in sessions/ directory by thread ID
         let sessionsDir = (codexHome as NSString).appendingPathComponent("sessions")
         guard FileManager.default.fileExists(atPath: sessionsDir) else {
             return nil
         }
 
-        // Sessions are organized as sessions/{year}/{month}/{day}/{rollout}.jsonl
-        // Thread ID might be the rollout filename — search for it
         if let found = findRolloutFile(in: sessionsDir, matching: threadId) {
             return found
         }
@@ -227,6 +283,8 @@ final class CodexReader {
         }
         return nil
     }
+
+    // MARK: - Health Check
 
     func healthCheck() -> SourceHealth {
         guard FileManager.default.fileExists(atPath: dbPath) else {

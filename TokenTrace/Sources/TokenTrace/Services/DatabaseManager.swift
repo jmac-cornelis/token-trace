@@ -73,6 +73,15 @@ final class DatabaseManager {
             }
         }
 
+        migrator.registerMigration("v4-fix-codex-timestamps") { db in
+            // Superseded by v5 — kept as no-op so existing DBs that already ran it don't error
+        }
+
+        migrator.registerMigration("v5-codex-per-request") { db in
+            try db.execute(sql: "DELETE FROM usage_events WHERE source = 'codex'")
+            try db.execute(sql: "DELETE FROM source_cursors WHERE source = 'codex'")
+        }
+
         return migrator
     }
 
