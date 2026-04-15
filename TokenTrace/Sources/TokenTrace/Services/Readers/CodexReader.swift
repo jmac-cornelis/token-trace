@@ -44,7 +44,7 @@ final class CodexReader {
             let results = try db.read { db -> (events: [UsageEvent], newCursor: String?) in
                 var sql = """
                     SELECT
-                        id, title, cwd, model_provider, tokens_used,
+                        id, title, cwd, model_provider, model, tokens_used,
                         source, created_at, updated_at, git_branch,
                         git_origin_url, cli_version, first_user_message,
                         rollout_path
@@ -74,6 +74,7 @@ final class CodexReader {
                     let title: String? = row["title"]
                     let cwd: String? = row["cwd"]
                     let modelProvider: String? = row["model_provider"]
+                    let modelName: String? = row["model"]
                     let firstMessage: String? = row["first_user_message"]
                     let rolloutPath: String? = row["rollout_path"]
 
@@ -101,7 +102,7 @@ final class CodexReader {
                             projectName: projectName,
                             repoPath: cwd,
                             provider: modelProvider,
-                            model: modelProvider,
+                            model: modelName ?? modelProvider,
                             agent: nil,
                             promptTokens: 0,
                             completionTokens: 0,

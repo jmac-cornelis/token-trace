@@ -69,15 +69,53 @@ enum CostEstimator {
 
     // MARK: - Default Pricing Table
 
-    /// Known model pricing as of early 2026.
+    /// Known model pricing as of April 2026 (dollars per 1M tokens).
+    /// Includes both canonical model names and OpenCode modelID aliases,
+    /// since OpenCode stores the config key (e.g. "developer-opus") in $.modelID.
     static let defaultPricingTable: [ModelPricing] = [
-        ModelPricing(modelName: "claude-opus-4-6",       inputPricePerMillion: 15.0,  outputPricePerMillion: 75.0),
-        ModelPricing(modelName: "gpt-5.3-codex-max",     inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0),
-        ModelPricing(modelName: "claude-sonnet-4-5",     inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0),
-        ModelPricing(modelName: "gemini-3-pro",          inputPricePerMillion: 1.25,  outputPricePerMillion: 10.0),
-        ModelPricing(modelName: "gpt-5.4-high",          inputPricePerMillion: 2.50,  outputPricePerMillion: 10.0),
-        ModelPricing(modelName: "gpt-5.2",               inputPricePerMillion: 2.0,   outputPricePerMillion: 8.0),
-        ModelPricing(modelName: "gpt-5.1-codex-mini",    inputPricePerMillion: 0.50,  outputPricePerMillion: 3.0),
+        // --- Anthropic Claude ---
+        ModelPricing(modelName: "claude-opus-4-6",                          inputPricePerMillion: 5.0,   outputPricePerMillion: 25.0),
+        ModelPricing(modelName: "claude-opus-4-6-extended",                 inputPricePerMillion: 5.0,   outputPricePerMillion: 25.0),
+        ModelPricing(modelName: "claude-sonnet-4-5",                        inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0),
+        ModelPricing(modelName: "claude-sonnet-4-6",                        inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0),
+        ModelPricing(modelName: "asic:claude-sonnet-4-5",                   inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0),
+
+        // --- OpenAI GPT / Codex ---
+        ModelPricing(modelName: "gpt-5.3-codex",                            inputPricePerMillion: 1.75,  outputPricePerMillion: 14.0),
+        ModelPricing(modelName: "gpt-5.3-codex-max",                        inputPricePerMillion: 1.75,  outputPricePerMillion: 14.0),
+        ModelPricing(modelName: "gpt-5.4",                                  inputPricePerMillion: 2.5,   outputPricePerMillion: 15.0),
+        ModelPricing(modelName: "gpt-5.4-xhigh",                           inputPricePerMillion: 2.5,   outputPricePerMillion: 15.0),
+        ModelPricing(modelName: "assistant-gpt-5.4",                        inputPricePerMillion: 2.5,   outputPricePerMillion: 15.0),
+
+        // --- Google Gemini ---
+        ModelPricing(modelName: "gemini-3-1-pro",                           inputPricePerMillion: 2.0,   outputPricePerMillion: 12.0),
+        ModelPricing(modelName: "gemini-3-flash",                           inputPricePerMillion: 0.5,   outputPricePerMillion: 3.0),
+
+        // --- Other providers ---
+        ModelPricing(modelName: "zai-org/GLM-4.7",                         inputPricePerMillion: 0.6,   outputPricePerMillion: 2.2),
+        ModelPricing(modelName: "kimi-k2.5",                                inputPricePerMillion: 0.5,   outputPricePerMillion: 2.8),
+
+        // --- OpenCode modelID aliases (keys stored in $.modelID) ---
+        ModelPricing(modelName: "developer-opus",                           inputPricePerMillion: 5.0,   outputPricePerMillion: 25.0),
+        ModelPricing(modelName: "developer-opus-extended",                  inputPricePerMillion: 5.0,   outputPricePerMillion: 25.0),
+        ModelPricing(modelName: "developer-sonnet",                         inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0),
+        ModelPricing(modelName: "developer-sonnet-4.6",                     inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0),
+        ModelPricing(modelName: "developer-codex",                          inputPricePerMillion: 1.75,  outputPricePerMillion: 14.0),
+        ModelPricing(modelName: "developer-codex-max",                      inputPricePerMillion: 1.75,  outputPricePerMillion: 14.0),
+        ModelPricing(modelName: "developer-gemini",                         inputPricePerMillion: 2.0,   outputPricePerMillion: 12.0),
+        ModelPricing(modelName: "developer-gemini-flash",                   inputPricePerMillion: 0.5,   outputPricePerMillion: 3.0),
+        ModelPricing(modelName: "developer-gpt",                            inputPricePerMillion: 2.5,   outputPricePerMillion: 15.0),
+        ModelPricing(modelName: "developer-gpt-xhigh",                     inputPricePerMillion: 2.5,   outputPricePerMillion: 15.0),
+        ModelPricing(modelName: "developer-glm",                            inputPricePerMillion: 0.6,   outputPricePerMillion: 2.2),
+        ModelPricing(modelName: "developer-kimi-k2.5",                     inputPricePerMillion: 0.5,   outputPricePerMillion: 2.8),
+        ModelPricing(modelName: "assistant-gpt",                            inputPricePerMillion: 2.5,   outputPricePerMillion: 15.0),
+        ModelPricing(modelName: "cn_asic:react_local:claude-sonnet-4-5",   inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0),
+
+        // --- Legacy models (kept for historical cost estimation) ---
+        ModelPricing(modelName: "gemini-3-pro",                             inputPricePerMillion: 1.25,  outputPricePerMillion: 10.0),
+        ModelPricing(modelName: "gpt-5.4-high",                             inputPricePerMillion: 2.50,  outputPricePerMillion: 10.0),
+        ModelPricing(modelName: "gpt-5.2",                                  inputPricePerMillion: 2.0,   outputPricePerMillion: 8.0),
+        ModelPricing(modelName: "gpt-5.1-codex-mini",                       inputPricePerMillion: 0.50,  outputPricePerMillion: 3.0),
     ]
 
     /// Fallback pricing for models not in the pricing table.

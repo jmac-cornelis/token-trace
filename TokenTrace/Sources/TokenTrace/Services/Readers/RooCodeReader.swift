@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 // MARK: - RooCodeReader
 
@@ -11,6 +12,12 @@ final class RooCodeReader {
     static let defaultBasePath: String = {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return "\(home)/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline"
+    }()
+
+    /// Path to the VS Code global state database that stores Roo Code API config metadata.
+    private static let vscodeStatePath: String = {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return "\(home)/Library/Application Support/Code/User/globalStorage/state.vscdb"
     }()
 
     // MARK: - Cursor
@@ -41,22 +48,12 @@ final class RooCodeReader {
         let status: String?
     }
 
-    // MARK: - UI Message Types
-
-    private struct UIMessage: Decodable {
-        let ts: Int64?
-        let type: String?
-        let say: String?
-        let text: String?
-    }
-
-    /// Embedded JSON inside api_req_started text field — cumulative token counts within a task.
-    private struct APIRequestPayload: Decodable {
-        let tokensIn: Int?
-        let tokensOut: Int?
-        let cacheWrites: Int?
-        let cacheReads: Int?
-        let cost: Double?
+    /// One entry from Roo Code's `listApiConfigMeta` stored in the VS Code state DB.
+    private struct ApiConfigMeta: Decodable {
+        let name: String
+        let id: String
+        let apiProvider: String?
+        let modelId: String?
     }
 
     // MARK: - Initialization
@@ -65,9 +62,59 @@ final class RooCodeReader {
         self.basePath = basePath
     }
 
+    // MARK: - API Config → Model ID Mapping
+
+    /// Reads the VS Code global state database and returns a mapping from
+    /// Roo Code `apiConfigName` (e.g. "cornelis") to the actual model ID
+    /// (e.g. "developer-opus-extended").
+    ///
+    /// Roo Code stores this mapping in `listApiConfigMeta` inside the
+    /// `RooVeterinaryInc.roo-cline` key of the VS Code state.vscdb SQLite file.
+    /// We open the DB read-only with SQLite3 directly to avoid a GRDB dependency
+    /// in this reader.
+    private func loadApiConfigModelMap() -> [String: String] {
+        let dbPath = RooCodeReader.vscodeStatePath
+        guard FileManager.default.fileExists(atPath: dbPath) else { return [:] }
+
+        var db: OpaquePointer?
+        // Open read-only; if it fails, return empty map and fall back to apiConfigName.
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            return [:]
+        }
+        defer { sqlite3_close(db) }
+
+        let query = "SELECT value FROM ItemTable WHERE key = 'RooVeterinaryInc.roo-cline'"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK else { return [:] }
+        defer { sqlite3_finalize(stmt) }
+
+        guard sqlite3_step(stmt) == SQLITE_ROW,
+              let rawBytes = sqlite3_column_text(stmt, 0) else { return [:] }
+
+        let jsonString = String(cString: rawBytes)
+        guard let jsonData = jsonString.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              let metaArray = root["listApiConfigMeta"] as? [[String: Any]] else {
+            return [:]
+        }
+
+        guard let metaData = try? JSONSerialization.data(withJSONObject: metaArray),
+              let configs = try? JSONDecoder().decode([ApiConfigMeta].self, from: metaData) else {
+            return [:]
+        }
+
+        // Build name → modelId map; skip entries without a modelId.
+        var map: [String: String] = [:]
+        for config in configs {
+            if let modelId = config.modelId, !modelId.isEmpty {
+                map[config.name] = modelId
+            }
+        }
+        return map
+    }
+
     // MARK: - Fetch Events
 
-    /// Cursor is JSON `{"lastTimestamp": <epoch_ms>}`. Returns per-request delta events + updated cursor.
     func fetchEvents(since cursor: String?) -> (events: [UsageEvent], newCursor: String?) {
         let cursorState = decodeCursor(cursor)
         let sinceMs = cursorState?.lastTimestamp ?? 0
@@ -83,18 +130,19 @@ final class RooCodeReader {
             .filter { $0.ts > sinceMs }
             .sorted { $0.ts < $1.ts }
 
+        let apiConfigModelMap = loadApiConfigModelMap()
+
         var allEvents: [UsageEvent] = []
         var latestTimestamp: Int64 = sinceMs
 
         for task in newTasks {
-            let taskEvents = extractEventsFromTask(task)
+            let taskEvents = extractEventsFromTask(task, apiConfigModelMap: apiConfigModelMap)
             allEvents.append(contentsOf: taskEvents)
 
             if task.ts > latestTimestamp {
                 latestTimestamp = task.ts
             }
 
-            // Also track the latest individual event timestamp for accurate cursor.
             for event in taskEvents {
                 let eventMs = Int64(event.observedAt.timeIntervalSince1970 * 1000)
                 if eventMs > latestTimestamp {
@@ -153,87 +201,53 @@ final class RooCodeReader {
 
     // MARK: - Private Helpers
 
-    /// Reads ui_messages.json for a task and computes per-request deltas from cumulative api_req_started events.
-    /// CRITICAL: tokensIn/tokensOut in api_req_started are CUMULATIVE within a task.
-    /// Each event's actual usage = current cumulative - previous cumulative.
-    private func extractEventsFromTask(_ task: TaskEntry) -> [UsageEvent] {
-        let messagesPath = (basePath as NSString)
-            .appendingPathComponent("tasks/\(task.id)/ui_messages.json")
+    private func extractEventsFromTask(_ task: TaskEntry, apiConfigModelMap: [String: String]) -> [UsageEvent] {
+        // Use _index.json totals as the authoritative token counts.
+        //
+        // We previously parsed ui_messages.json and computed per-request deltas from
+        // cumulative token values. That approach breaks when Roo Code resets its
+        // cumulative counter mid-task (e.g. after context condensation), causing
+        // massive undercounting (e.g. 936K reported vs 46.5M actual).
+        //
+        // The _index.json entry already carries the correct lifetime totals for the
+        // task, so we emit one UsageEvent per task using those values. This is
+        // simpler, more reliable, and matches what Roo Code itself reports.
+        let totalIn = task.tokensIn ?? 0
+        let totalOut = task.tokensOut ?? 0
+        let totalTokens = totalIn + totalOut
 
-        guard let data = FileManager.default.contents(atPath: messagesPath),
-              let messages = try? JSONDecoder().decode([UIMessage].self, from: data) else {
-            return []
-        }
-
-        let apiRequests = messages.filter { $0.type == "say" && $0.say == "api_req_started" }
-
-        var events: [UsageEvent] = []
-        var previousIn = 0
-        var previousOut = 0
-        var previousCacheReads = 0
-        var previousCacheWrites = 0
+        guard totalTokens > 0 else { return [] }
 
         let projectName = task.workspace.flatMap { workspace -> String? in
             guard !workspace.isEmpty else { return nil }
             return URL(fileURLWithPath: workspace).lastPathComponent
         }
 
-        for (index, request) in apiRequests.enumerated() {
-            guard let textJSON = request.text,
-                  let textData = textJSON.data(using: .utf8),
-                  let payload = try? JSONDecoder().decode(APIRequestPayload.self, from: textData) else {
-                continue
-            }
+        let observedAt = Date(timeIntervalSince1970: Double(task.ts) / 1000.0)
+        let resolvedModel = task.apiConfigName.flatMap { apiConfigModelMap[$0] } ?? task.apiConfigName
 
-            let currentIn = payload.tokensIn ?? 0
-            let currentOut = payload.tokensOut ?? 0
-            let currentCacheReads = payload.cacheReads ?? 0
-            let currentCacheWrites = payload.cacheWrites ?? 0
+        let event = UsageEvent(
+            id: task.id,
+            observedAt: observedAt,
+            source: .roo,
+            sessionID: task.id,
+            sessionTitle: task.task,
+            requestID: task.id,
+            projectName: projectName,
+            repoPath: task.workspace,
+            provider: task.apiConfigName,
+            model: resolvedModel,
+            agent: task.mode,
+            promptTokens: totalIn,
+            completionTokens: totalOut,
+            cachedReadTokens: task.cacheReads ?? 0,
+            cachedWriteTokens: task.cacheWrites ?? 0,
+            reasoningTokens: 0,
+            totalTokens: totalTokens,
+            estimatedCostUSD: task.totalCost ?? 0.0
+        )
 
-            // Compute deltas from cumulative values.
-            let deltaIn = currentIn - previousIn
-            let deltaOut = currentOut - previousOut
-            let deltaCacheReads = currentCacheReads - previousCacheReads
-            let deltaCacheWrites = currentCacheWrites - previousCacheWrites
-            let deltaTotal = deltaIn + deltaOut
-
-            previousIn = currentIn
-            previousOut = currentOut
-            previousCacheReads = currentCacheReads
-            previousCacheWrites = currentCacheWrites
-
-            guard deltaTotal > 0 else { continue }
-
-            let timestamp = request.ts ?? task.ts
-            let observedAt = Date(timeIntervalSince1970: Double(timestamp) / 1000.0)
-
-            let sessionTitle = task.task
-
-            let event = UsageEvent(
-                id: "\(task.id)-\(index)",
-                observedAt: observedAt,
-                source: .roo,
-                sessionID: task.id,
-                sessionTitle: sessionTitle,
-                requestID: "\(task.id)-\(index)",
-                projectName: projectName,
-                repoPath: task.workspace,
-                provider: task.apiConfigName,
-                model: task.apiConfigName,
-                agent: task.mode,
-                promptTokens: deltaIn,
-                completionTokens: deltaOut,
-                cachedReadTokens: deltaCacheReads,
-                cachedWriteTokens: deltaCacheWrites,
-                reasoningTokens: 0,
-                totalTokens: deltaTotal,
-                estimatedCostUSD: payload.cost ?? 0.0
-            )
-
-            events.append(event)
-        }
-
-        return events
+        return [event]
     }
 
     private func decodeCursor(_ cursor: String?) -> CursorState? {
