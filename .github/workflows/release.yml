@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: macos-14
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Build release binary
+        working-directory: TokenTrace
+        run: swift build -c release --arch arm64 --arch x86_64
+
+      - name: Bundle .app
+        run: |
+          APP=TokenTrace.app
+          BIN=$(find TokenTrace/.build -name TokenTrace -type f | grep -i release | grep -v dSYM | head -1)
+
+          mkdir -p "$APP/Contents/MacOS"
+          mkdir -p "$APP/Contents/Resources"
+
+          cp "$BIN" "$APP/Contents/MacOS/TokenTrace"
+          cp TokenTrace/Info.plist "$APP/Contents/"
+
+          xattr -cr "$APP" || true
+
+      - name: Create DMG
+        run: |
+          mkdir dmg_staging
+          cp -r TokenTrace.app dmg_staging/
+          ln -s /Applications dmg_staging/Applications
+          hdiutil create \
+            -volname "TokenTrace" \
+            -srcfolder dmg_staging \
+            -ov -format UDZO \
+            TokenTrace.dmg
+
+      - name: Create tarball
+        run: tar -czf TokenTrace.tar.gz TokenTrace.app
+
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute SHA256
+        id: sha
+        run: |
+          echo "dmg=$(shasum -a 256 TokenTrace.dmg | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "tar=$(shasum -a 256 TokenTrace.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: TokenTrace ${{ steps.version.outputs.version }}
+          body: |
+            ## Install
+
+            **One-liner:**
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash
+            ```
+
+            **Manual:**
+            Download `TokenTrace.dmg`, open it, drag TokenTrace to Applications.
+            If macOS blocks the app: System Settings → Privacy & Security → Open Anyway.
+
+            ---
+            SHA256:
+            - `TokenTrace.dmg`: `${{ steps.sha.outputs.dmg }}`
+            - `TokenTrace.tar.gz`: `${{ steps.sha.outputs.tar }}`
+          files: |
+            TokenTrace.dmg
+            TokenTrace.tar.gz
+          draft: false
+          prerelease: false
