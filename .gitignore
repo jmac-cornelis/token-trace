@@ -13,6 +13,9 @@ DerivedData/
 Package.resolved
 .swiftpm/
 
+# Compiled app bundle (build artifact)
+*.app/
+
 # App data (never commit user databases)
 *.db
 *.db-wal

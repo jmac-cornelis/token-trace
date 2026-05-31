@@ -7,6 +7,19 @@ struct ModelPricing {
     let modelName: String
     let inputPricePerMillion: Double
     let outputPricePerMillion: Double
+    let cacheReadPricePerMillion: Double?
+
+    init(
+        modelName: String,
+        inputPricePerMillion: Double,
+        outputPricePerMillion: Double,
+        cacheReadPricePerMillion: Double? = nil
+    ) {
+        self.modelName = modelName
+        self.inputPricePerMillion = inputPricePerMillion
+        self.outputPricePerMillion = outputPricePerMillion
+        self.cacheReadPricePerMillion = cacheReadPricePerMillion
+    }
 }
 
 // MARK: - Billable Token Computation
@@ -52,6 +65,11 @@ struct CostEstimate {
     let caveats: [String]
 }
 
+struct ModelRequestCount {
+    let model: String?
+    let count: Int
+}
+
 // MARK: - Cost Estimator
 
 /// Namespace for cost estimation logic.
@@ -92,6 +110,7 @@ enum CostEstimator {
         ModelPricing(modelName: "gemini-3-flash",                           inputPricePerMillion: 0.5,   outputPricePerMillion: 3.0),
 
         // --- Other providers ---
+        ModelPricing(modelName: "deepseek-v4-pro",                         inputPricePerMillion: 2.1,   outputPricePerMillion: 4.4,  cacheReadPricePerMillion: 0.2),
         ModelPricing(modelName: "zai-org/GLM-4.7",                         inputPricePerMillion: 0.6,   outputPricePerMillion: 2.2),
         ModelPricing(modelName: "kimi-k2.5",                                inputPricePerMillion: 0.5,   outputPricePerMillion: 2.8),
 
@@ -104,11 +123,12 @@ enum CostEstimator {
         ModelPricing(modelName: "developer-codex-max",                      inputPricePerMillion: 1.75,  outputPricePerMillion: 14.0),
         ModelPricing(modelName: "developer-gemini",                         inputPricePerMillion: 2.0,   outputPricePerMillion: 12.0),
         ModelPricing(modelName: "developer-gemini-flash",                   inputPricePerMillion: 0.5,   outputPricePerMillion: 3.0),
-        ModelPricing(modelName: "developer-gpt",                            inputPricePerMillion: 2.5,   outputPricePerMillion: 15.0),
-        ModelPricing(modelName: "developer-gpt-xhigh",                     inputPricePerMillion: 2.5,   outputPricePerMillion: 15.0),
+        ModelPricing(modelName: "developer-deepseek",                       inputPricePerMillion: 2.1,   outputPricePerMillion: 4.4,  cacheReadPricePerMillion: 0.2),
+        ModelPricing(modelName: "developer-gpt",                            inputPricePerMillion: 2.5,   outputPricePerMillion: 30.0, cacheReadPricePerMillion: 0.25),
+        ModelPricing(modelName: "developer-gpt-xhigh",                     inputPricePerMillion: 2.5,   outputPricePerMillion: 30.0, cacheReadPricePerMillion: 0.25),
+        ModelPricing(modelName: "assistant-gpt",                            inputPricePerMillion: 2.5,   outputPricePerMillion: 30.0, cacheReadPricePerMillion: 0.25),
         ModelPricing(modelName: "developer-glm",                            inputPricePerMillion: 0.6,   outputPricePerMillion: 2.2),
         ModelPricing(modelName: "developer-kimi-k2.5",                     inputPricePerMillion: 0.5,   outputPricePerMillion: 2.8),
-        ModelPricing(modelName: "assistant-gpt",                            inputPricePerMillion: 2.5,   outputPricePerMillion: 15.0),
         ModelPricing(modelName: "cn_asic:react_local:claude-sonnet-4-5",   inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0),
 
         // --- Legacy models (kept for historical cost estimation) ---
@@ -140,15 +160,27 @@ enum CostEstimator {
     static func estimate(
         totalPromptTokens: Int,
         totalCompletionTokens: Int,
-        modelRequestCounts: [(model: String, count: Int)],
+        modelRequestCounts: [ModelRequestCount],
         pricingTable: [ModelPricing] = defaultPricingTable
     ) -> CostEstimate {
+        let pricingLookup = pricingLookup(from: pricingTable)
+        let sanitizedRequestCounts = sanitizeModelRequestCounts(
+            modelRequestCounts,
+            pricingLookup: pricingLookup
+        )
+        let totalRequests = sanitizedRequestCounts.reduce(0) { $0 + $1.count }
 
-        // Edge case: no requests means no cost — return zeroed-out estimate.
-        let totalRequests = modelRequestCounts.reduce(0) { $0 + $1.count }
         guard totalRequests > 0 else {
             return CostEstimate(
-                totalEstimatedCost: 0,
+                totalEstimatedCost: estimateCostFromEvents(
+                    promptTokens: totalPromptTokens,
+                    completionTokens: totalCompletionTokens,
+                    cachedReadTokens: 0,
+                    cachedWriteTokens: 0,
+                    reasoningTokens: 0,
+                    model: nil,
+                    pricingTable: pricingTable
+                ),
                 perModelEstimates: [],
                 totalInputTokens: totalPromptTokens,
                 totalOutputTokens: totalCompletionTokens,
@@ -157,29 +189,18 @@ enum CostEstimator {
             )
         }
 
-        // Build a lookup from model name → pricing for O(1) access.
-        let pricingLookup = Dictionary(
-            uniqueKeysWithValues: pricingTable.map { ($0.modelName, $0) }
-        )
-
         var perModelEstimates: [ModelCostEstimate] = []
         var totalCost = 0.0
 
-        for entry in modelRequestCounts {
-            // Skip models with zero requests — they contribute nothing.
-            guard entry.count > 0 else { continue }
+        for entry in sanitizedRequestCounts {
+            guard let modelName = entry.model else {
+                continue
+            }
 
-            // Proportion of total requests attributed to this model.
             let percentage = Double(entry.count) / Double(totalRequests)
-
-            // Distribute aggregate tokens proportionally by request share.
             let inputTokens = Int((Double(totalPromptTokens) * percentage).rounded())
             let outputTokens = Int((Double(totalCompletionTokens) * percentage).rounded())
-
-            // Look up pricing; fall back to mid-range estimate for unknown models.
-            let pricing = pricingLookup[entry.model] ?? unknownModelPricing
-
-            // Cost = tokens × (price per million / 1,000,000)
+            let pricing = pricing(for: modelName, pricingLookup: pricingLookup)
             let inputCost = Double(inputTokens) * pricing.inputPricePerMillion / 1_000_000.0
             let outputCost = Double(outputTokens) * pricing.outputPricePerMillion / 1_000_000.0
             let modelCost = inputCost + outputCost
@@ -187,7 +208,7 @@ enum CostEstimator {
             totalCost += modelCost
 
             perModelEstimates.append(ModelCostEstimate(
-                modelName: entry.model,
+                modelName: modelName,
                 requestCount: entry.count,
                 requestPercentage: percentage,
                 estimatedInputTokens: inputTokens,
@@ -196,8 +217,15 @@ enum CostEstimator {
             ))
         }
 
-        // Sort by cost descending so the most expensive model appears first.
-        perModelEstimates.sort { $0.estimatedCost > $1.estimatedCost }
+        perModelEstimates.sort {
+            if $0.estimatedCost != $1.estimatedCost {
+                return $0.estimatedCost > $1.estimatedCost
+            }
+            if $0.requestCount != $1.requestCount {
+                return $0.requestCount > $1.requestCount
+            }
+            return $0.modelName.localizedCaseInsensitiveCompare($1.modelName) == .orderedAscending
+        }
 
         return CostEstimate(
             totalEstimatedCost: totalCost,
@@ -207,6 +235,72 @@ enum CostEstimator {
             timeRange: "",
             caveats: Self.standardCaveats
         )
+    }
+
+    private static let ignoredModelIdentifiers: Set<String> = [
+        "anthropic",
+        "cornelis",
+        "google",
+        "openai",
+        "unknown",
+    ]
+
+    private static func sanitizeModelRequestCounts(
+        _ modelRequestCounts: [ModelRequestCount],
+        pricingLookup: [String: ModelPricing]
+    ) -> [ModelRequestCount] {
+        var aggregatedCounts: [String: Int] = [:]
+
+        for entry in modelRequestCounts {
+            guard entry.count > 0,
+                  let modelName = canonicalModelName(entry.model, pricingLookup: pricingLookup) else {
+                continue
+            }
+
+            aggregatedCounts[modelName, default: 0] += entry.count
+        }
+
+        return aggregatedCounts
+            .sorted { lhs, rhs in
+                lhs.key.localizedCaseInsensitiveCompare(rhs.key) == .orderedAscending
+            }
+            .map { ModelRequestCount(model: $0.key, count: $0.value) }
+    }
+
+    private static func canonicalModelName(
+        _ rawModel: String?,
+        pricingLookup: [String: ModelPricing]
+    ) -> String? {
+        guard let trimmed = rawModel?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+
+        let lookupKey = trimmed.lowercased()
+        if let pricing = pricingLookup[lookupKey] {
+            return pricing.modelName
+        }
+
+        if ignoredModelIdentifiers.contains(lookupKey) {
+            return nil
+        }
+
+        return trimmed
+    }
+
+    private static func pricingLookup(from pricingTable: [ModelPricing]) -> [String: ModelPricing] {
+        Dictionary(uniqueKeysWithValues: pricingTable.map { ($0.modelName.lowercased(), $0) })
+    }
+
+    private static func pricing(
+        for model: String?,
+        pricingLookup: [String: ModelPricing]
+    ) -> ModelPricing {
+        guard let model else {
+            return unknownModelPricing
+        }
+
+        return pricingLookup[model.lowercased()] ?? unknownModelPricing
     }
 
     // MARK: - Formatting
@@ -285,16 +379,18 @@ enum CostEstimator {
         model: String?,
         pricingTable: [ModelPricing] = defaultPricingTable
     ) -> Double {
-        let pricingLookup = Dictionary(
-            uniqueKeysWithValues: pricingTable.map { ($0.modelName, $0) }
-        )
-        let pricing = model.flatMap { pricingLookup[$0] } ?? unknownModelPricing
+        let pricingLookup = pricingLookup(from: pricingTable)
+        let normalizedModel = canonicalModelName(model, pricingLookup: pricingLookup)
+        let pricing = pricing(for: normalizedModel, pricingLookup: pricingLookup)
 
         let uncached = max(0, promptTokens - cachedReadTokens - cachedWriteTokens)
-        let inputCost = (Double(uncached) * uncachedMultiplier
-            + Double(cachedReadTokens) * cachedReadMultiplier
+        let uncachedAndWriteInputCost = (Double(uncached) * uncachedMultiplier
             + Double(cachedWriteTokens) * cachedWriteMultiplier)
             * pricing.inputPricePerMillion / 1_000_000.0
+        let cachedReadInputCost = Double(cachedReadTokens)
+            * (pricing.cacheReadPricePerMillion ?? pricing.inputPricePerMillion * cachedReadMultiplier)
+            / 1_000_000.0
+        let inputCost = uncachedAndWriteInputCost + cachedReadInputCost
 
         let outputCost = Double(completionTokens + reasoningTokens)
             * pricing.outputPricePerMillion / 1_000_000.0

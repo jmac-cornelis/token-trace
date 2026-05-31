@@ -1,33 +1,61 @@
 import Foundation
 import SQLite3
 
-// MARK: - RooCodeReader
+struct RooTaskSnapshot {
+    let taskID: String
+    let tokensIn: Int
+    let tokensOut: Int
+    let cacheWrites: Int
+    let cacheReads: Int
+    let totalCost: Double
+    let lastTimestamp: Int64
+    let status: String?
+    let firstSeenAt: Date
+}
+
+protocol RooTaskSnapshotStore {
+    func snapshots(for taskIDs: [String]) throws -> [String: RooTaskSnapshot]
+    func saveSnapshots(_ snapshots: [RooTaskSnapshot]) throws
+}
+
+final class InMemoryRooTaskSnapshotStore: RooTaskSnapshotStore {
+    private var snapshotsByTaskID: [String: RooTaskSnapshot] = [:]
+
+    func snapshots(for taskIDs: [String]) throws -> [String: RooTaskSnapshot] {
+        var result: [String: RooTaskSnapshot] = [:]
+        for taskID in taskIDs {
+            if let snapshot = snapshotsByTaskID[taskID] {
+                result[taskID] = snapshot
+            }
+        }
+        return result
+    }
+
+    func saveSnapshots(_ snapshots: [RooTaskSnapshot]) throws {
+        for snapshot in snapshots {
+            snapshotsByTaskID[snapshot.taskID] = snapshot
+        }
+    }
+}
 
 final class RooCodeReader {
 
-    // MARK: - Properties
-
     private let basePath: String
+    private let snapshotStore: any RooTaskSnapshotStore
 
     static let defaultBasePath: String = {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return "\(home)/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline"
     }()
 
-    /// Path to the VS Code global state database that stores Roo Code API config metadata.
     private static let vscodeStatePath: String = {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return "\(home)/Library/Application Support/Code/User/globalStorage/state.vscdb"
     }()
 
-    // MARK: - Cursor
-
-    /// Cursor is JSON: `{"lastTimestamp": <epoch_ms>}`. Encodes the high-water mark for incremental reads.
     private struct CursorState: Codable {
         let lastTimestamp: Int64
     }
-
-    // MARK: - Index File Types
 
     private struct TaskIndex: Decodable {
         let entries: [TaskEntry]
@@ -48,7 +76,11 @@ final class RooCodeReader {
         let status: String?
     }
 
-    /// One entry from Roo Code's `listApiConfigMeta` stored in the VS Code state DB.
+    private struct DeltaResult {
+        let event: UsageEvent?
+        let snapshot: RooTaskSnapshot
+    }
+
     private struct ApiConfigMeta: Decodable {
         let name: String
         let id: String
@@ -56,28 +88,34 @@ final class RooCodeReader {
         let modelId: String?
     }
 
-    // MARK: - Initialization
-
-    init(basePath: String = RooCodeReader.defaultBasePath) {
-        self.basePath = basePath
+    private struct UIMessage: Decodable {
+        let ts: Int64?
+        let type: String?
+        let say: String?
+        let text: String?
     }
 
-    // MARK: - API Config → Model ID Mapping
+    private struct ApiRequestPayload: Decodable {
+        let tokensIn: Int?
+        let tokensOut: Int?
+        let cacheWrites: Int?
+        let cacheReads: Int?
+        let cost: Double?
+    }
 
-    /// Reads the VS Code global state database and returns a mapping from
-    /// Roo Code `apiConfigName` (e.g. "cornelis") to the actual model ID
-    /// (e.g. "developer-opus-extended").
-    ///
-    /// Roo Code stores this mapping in `listApiConfigMeta` inside the
-    /// `RooVeterinaryInc.roo-cline` key of the VS Code state.vscdb SQLite file.
-    /// We open the DB read-only with SQLite3 directly to avoid a GRDB dependency
-    /// in this reader.
+    init(
+        basePath: String = RooCodeReader.defaultBasePath,
+        snapshotStore: any RooTaskSnapshotStore = InMemoryRooTaskSnapshotStore()
+    ) {
+        self.basePath = basePath
+        self.snapshotStore = snapshotStore
+    }
+
     private func loadApiConfigModelMap() -> [String: String] {
         let dbPath = RooCodeReader.vscodeStatePath
         guard FileManager.default.fileExists(atPath: dbPath) else { return [:] }
 
         var db: OpaquePointer?
-        // Open read-only; if it fails, return empty map and fall back to apiConfigName.
         guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
             return [:]
         }
@@ -103,7 +141,6 @@ final class RooCodeReader {
             return [:]
         }
 
-        // Build name → modelId map; skip entries without a modelId.
         var map: [String: String] = [:]
         for config in configs {
             if let modelId = config.modelId, !modelId.isEmpty {
@@ -113,14 +150,11 @@ final class RooCodeReader {
         return map
     }
 
-    // MARK: - Fetch Events
-
-    func fetchEvents(since cursor: String?) -> (events: [UsageEvent], newCursor: String?) {
+    func fetchEvents(since cursor: String?) throws -> (events: [UsageEvent], newCursor: String?) {
         let cursorState = decodeCursor(cursor)
         let sinceMs = cursorState?.lastTimestamp ?? 0
 
         let indexPath = (basePath as NSString).appendingPathComponent("tasks/_index.json")
-
         guard let indexData = FileManager.default.contents(atPath: indexPath),
               let taskIndex = try? JSONDecoder().decode(TaskIndex.self, from: indexData) else {
             return (events: [], newCursor: cursor)
@@ -130,25 +164,37 @@ final class RooCodeReader {
             .filter { $0.ts > sinceMs }
             .sorted { $0.ts < $1.ts }
 
+        if newTasks.isEmpty {
+            return (events: [], newCursor: cursor)
+        }
+
         let apiConfigModelMap = loadApiConfigModelMap()
+        let bootstrapScan = cursorState == nil
+        let existingSnapshots = try snapshotStore.snapshots(for: newTasks.map { $0.id })
+        let startOfToday = Calendar.current.startOfDay(for: Date())
 
         var allEvents: [UsageEvent] = []
+        var pendingSnapshots: [RooTaskSnapshot] = []
         var latestTimestamp: Int64 = sinceMs
 
         for task in newTasks {
-            let taskEvents = extractEventsFromTask(task, apiConfigModelMap: apiConfigModelMap)
-            allEvents.append(contentsOf: taskEvents)
+            let delta = deltaResult(
+                for: task,
+                existingSnapshot: existingSnapshots[task.id],
+                bootstrapScan: bootstrapScan,
+                startOfToday: startOfToday,
+                apiConfigModelMap: apiConfigModelMap
+            )
 
-            if task.ts > latestTimestamp {
-                latestTimestamp = task.ts
+            if let event = delta.event {
+                allEvents.append(event)
             }
+            pendingSnapshots.append(delta.snapshot)
+            latestTimestamp = max(latestTimestamp, task.ts)
+        }
 
-            for event in taskEvents {
-                let eventMs = Int64(event.observedAt.timeIntervalSince1970 * 1000)
-                if eventMs > latestTimestamp {
-                    latestTimestamp = eventMs
-                }
-            }
+        if !pendingSnapshots.isEmpty {
+            try snapshotStore.saveSnapshots(pendingSnapshots)
         }
 
         let newCursor: String?
@@ -160,8 +206,6 @@ final class RooCodeReader {
 
         return (events: allEvents, newCursor: newCursor)
     }
-
-    // MARK: - Health Check
 
     func healthCheck() -> SourceHealth {
         let indexPath = (basePath as NSString).appendingPathComponent("tasks/_index.json")
@@ -199,55 +243,247 @@ final class RooCodeReader {
         )
     }
 
-    // MARK: - Private Helpers
+    private func deltaResult(
+        for task: TaskEntry,
+        existingSnapshot: RooTaskSnapshot?,
+        bootstrapScan: Bool,
+        startOfToday: Date,
+        apiConfigModelMap: [String: String]
+    ) -> DeltaResult {
+        let observedAt = Date(timeIntervalSince1970: Double(task.ts) / 1000.0)
+        let currentSnapshot = makeSnapshot(
+            from: task,
+            firstSeenAt: existingSnapshot?.firstSeenAt ?? observedAt
+        )
 
-    private func extractEventsFromTask(_ task: TaskEntry, apiConfigModelMap: [String: String]) -> [UsageEvent] {
-        // Use _index.json totals as the authoritative token counts.
-        //
-        // We previously parsed ui_messages.json and computed per-request deltas from
-        // cumulative token values. That approach breaks when Roo Code resets its
-        // cumulative counter mid-task (e.g. after context condensation), causing
-        // massive undercounting (e.g. 936K reported vs 46.5M actual).
-        //
-        // The _index.json entry already carries the correct lifetime totals for the
-        // task, so we emit one UsageEvent per task using those values. This is
-        // simpler, more reliable, and matches what Roo Code itself reports.
-        let totalIn = task.tokensIn ?? 0
-        let totalOut = task.tokensOut ?? 0
-        let totalTokens = totalIn + totalOut
+        if let existingSnapshot {
+            return DeltaResult(
+                event: makeDeltaEvent(
+                    from: task,
+                    observedAt: observedAt,
+                    apiConfigModelMap: apiConfigModelMap,
+                    existingSnapshot: existingSnapshot,
+                    currentSnapshot: currentSnapshot
+                ),
+                snapshot: currentSnapshot
+            )
+        }
 
-        guard totalTokens > 0 else { return [] }
+        if bootstrapScan {
+            return DeltaResult(
+                event: makeBootstrapEvent(
+                    from: task,
+                    startOfToday: startOfToday,
+                    apiConfigModelMap: apiConfigModelMap
+                ),
+                snapshot: currentSnapshot
+            )
+        }
 
+        return DeltaResult(
+            event: makeInitialEvent(
+                from: task,
+                observedAt: observedAt,
+                apiConfigModelMap: apiConfigModelMap,
+                currentSnapshot: currentSnapshot
+            ),
+            snapshot: currentSnapshot
+        )
+    }
+
+    private func makeSnapshot(from task: TaskEntry, firstSeenAt: Date) -> RooTaskSnapshot {
+        RooTaskSnapshot(
+            taskID: task.id,
+            tokensIn: task.tokensIn ?? 0,
+            tokensOut: task.tokensOut ?? 0,
+            cacheWrites: task.cacheWrites ?? 0,
+            cacheReads: task.cacheReads ?? 0,
+            totalCost: task.totalCost ?? 0,
+            lastTimestamp: task.ts,
+            status: task.status,
+            firstSeenAt: firstSeenAt
+        )
+    }
+
+    private func makeInitialEvent(
+        from task: TaskEntry,
+        observedAt: Date,
+        apiConfigModelMap: [String: String],
+        currentSnapshot: RooTaskSnapshot
+    ) -> UsageEvent? {
+        let totalTokens = currentSnapshot.tokensIn + currentSnapshot.tokensOut
+        let hasUsage = totalTokens > 0
+            || currentSnapshot.cacheReads > 0
+            || currentSnapshot.cacheWrites > 0
+            || currentSnapshot.totalCost > 0
+
+        guard hasUsage else { return nil }
+
+        return makeEvent(
+            id: "\(task.id)-\(task.ts)",
+            task: task,
+            observedAt: observedAt,
+            apiConfigModelMap: apiConfigModelMap,
+            promptTokens: currentSnapshot.tokensIn,
+            completionTokens: currentSnapshot.tokensOut,
+            cachedReadTokens: currentSnapshot.cacheReads,
+            cachedWriteTokens: currentSnapshot.cacheWrites,
+            estimatedCostUSD: currentSnapshot.totalCost
+        )
+    }
+
+    private func makeBootstrapEvent(
+        from task: TaskEntry,
+        startOfToday: Date,
+        apiConfigModelMap: [String: String]
+    ) -> UsageEvent? {
+        guard let usage = bootstrapUsage(for: task.id, startOfToday: startOfToday) else {
+            return nil
+        }
+
+        return makeEvent(
+            id: "\(task.id)-bootstrap-\(Int64(startOfToday.timeIntervalSince1970 * 1000))",
+            task: task,
+            observedAt: usage.observedAt,
+            apiConfigModelMap: apiConfigModelMap,
+            promptTokens: usage.promptTokens,
+            completionTokens: usage.completionTokens,
+            cachedReadTokens: usage.cachedReadTokens,
+            cachedWriteTokens: usage.cachedWriteTokens,
+            estimatedCostUSD: usage.estimatedCostUSD
+        )
+    }
+
+    private func bootstrapUsage(for taskID: String, startOfToday: Date) -> (
+        observedAt: Date,
+        promptTokens: Int,
+        completionTokens: Int,
+        cachedReadTokens: Int,
+        cachedWriteTokens: Int,
+        estimatedCostUSD: Double
+    )? {
+        let messagesPath = (basePath as NSString).appendingPathComponent("tasks/\(taskID)/ui_messages.json")
+        guard let data = FileManager.default.contents(atPath: messagesPath),
+              let messages = try? JSONDecoder().decode([UIMessage].self, from: data) else {
+            return nil
+        }
+
+        let startOfTodayMs = Int64(startOfToday.timeIntervalSince1970 * 1000)
+        var latestTimestamp = startOfTodayMs
+        var promptTokens = 0
+        var completionTokens = 0
+        var cachedReadTokens = 0
+        var cachedWriteTokens = 0
+        var estimatedCostUSD = 0.0
+
+        for message in messages {
+            guard message.type == "say",
+                  message.say == "api_req_started",
+                  let timestamp = message.ts,
+                  timestamp >= startOfTodayMs,
+                  let text = message.text,
+                  let payloadData = text.data(using: .utf8),
+                  let payload = try? JSONDecoder().decode(ApiRequestPayload.self, from: payloadData) else {
+                continue
+            }
+
+            promptTokens += payload.tokensIn ?? 0
+            completionTokens += payload.tokensOut ?? 0
+            cachedReadTokens += payload.cacheReads ?? 0
+            cachedWriteTokens += payload.cacheWrites ?? 0
+            estimatedCostUSD += payload.cost ?? 0
+            latestTimestamp = max(latestTimestamp, timestamp)
+        }
+
+        let hasUsage = promptTokens > 0
+            || completionTokens > 0
+            || cachedReadTokens > 0
+            || cachedWriteTokens > 0
+            || estimatedCostUSD > 0
+
+        guard hasUsage else { return nil }
+
+        return (
+            observedAt: Date(timeIntervalSince1970: Double(latestTimestamp) / 1000.0),
+            promptTokens: promptTokens,
+            completionTokens: completionTokens,
+            cachedReadTokens: cachedReadTokens,
+            cachedWriteTokens: cachedWriteTokens,
+            estimatedCostUSD: estimatedCostUSD
+        )
+    }
+
+    private func makeDeltaEvent(
+        from task: TaskEntry,
+        observedAt: Date,
+        apiConfigModelMap: [String: String],
+        existingSnapshot: RooTaskSnapshot,
+        currentSnapshot: RooTaskSnapshot
+    ) -> UsageEvent? {
+        let deltaPrompt = max(0, currentSnapshot.tokensIn - existingSnapshot.tokensIn)
+        let deltaCompletion = max(0, currentSnapshot.tokensOut - existingSnapshot.tokensOut)
+        let deltaCachedRead = max(0, currentSnapshot.cacheReads - existingSnapshot.cacheReads)
+        let deltaCachedWrite = max(0, currentSnapshot.cacheWrites - existingSnapshot.cacheWrites)
+        let deltaCost = max(0, currentSnapshot.totalCost - existingSnapshot.totalCost)
+
+        let hasUsage = deltaPrompt > 0
+            || deltaCompletion > 0
+            || deltaCachedRead > 0
+            || deltaCachedWrite > 0
+            || deltaCost > 0
+
+        guard hasUsage else { return nil }
+
+        return makeEvent(
+            id: "\(task.id)-\(task.ts)",
+            task: task,
+            observedAt: observedAt,
+            apiConfigModelMap: apiConfigModelMap,
+            promptTokens: deltaPrompt,
+            completionTokens: deltaCompletion,
+            cachedReadTokens: deltaCachedRead,
+            cachedWriteTokens: deltaCachedWrite,
+            estimatedCostUSD: deltaCost
+        )
+    }
+
+    private func makeEvent(
+        id: String,
+        task: TaskEntry,
+        observedAt: Date,
+        apiConfigModelMap: [String: String],
+        promptTokens: Int,
+        completionTokens: Int,
+        cachedReadTokens: Int,
+        cachedWriteTokens: Int,
+        estimatedCostUSD: Double
+    ) -> UsageEvent {
         let projectName = task.workspace.flatMap { workspace -> String? in
             guard !workspace.isEmpty else { return nil }
             return URL(fileURLWithPath: workspace).lastPathComponent
         }
-
-        let observedAt = Date(timeIntervalSince1970: Double(task.ts) / 1000.0)
         let resolvedModel = task.apiConfigName.flatMap { apiConfigModelMap[$0] } ?? task.apiConfigName
 
-        let event = UsageEvent(
-            id: task.id,
+        return UsageEvent(
+            id: id,
             observedAt: observedAt,
             source: .roo,
             sessionID: task.id,
             sessionTitle: task.task,
-            requestID: task.id,
+            requestID: id,
             projectName: projectName,
             repoPath: task.workspace,
             provider: task.apiConfigName,
             model: resolvedModel,
             agent: task.mode,
-            promptTokens: totalIn,
-            completionTokens: totalOut,
-            cachedReadTokens: task.cacheReads ?? 0,
-            cachedWriteTokens: task.cacheWrites ?? 0,
+            promptTokens: promptTokens,
+            completionTokens: completionTokens,
+            cachedReadTokens: cachedReadTokens,
+            cachedWriteTokens: cachedWriteTokens,
             reasoningTokens: 0,
-            totalTokens: totalTokens,
-            estimatedCostUSD: task.totalCost ?? 0.0
+            totalTokens: promptTokens + completionTokens,
+            estimatedCostUSD: estimatedCostUSD
         )
-
-        return [event]
     }
 
     private func decodeCursor(_ cursor: String?) -> CursorState? {

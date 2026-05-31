@@ -31,6 +31,7 @@ struct OpenCodeReaderTests {
         #expect(first.totalTokens == 1500)
         #expect(first.model == "developer-opus")
         #expect(first.provider == "cornelis")
+        #expect(first.lastPrompt == "Latest user prompt")
     }
 
     @Test func cursorFiltersOldMessages() throws {
@@ -133,6 +134,13 @@ struct OpenCodeReaderTests {
                 )
                 """)
 
+            try db.execute(sql: """
+                CREATE TABLE part (
+                    id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES message(id),
+                    data TEXT NOT NULL
+                )
+                """)
+
             let now = Int64(Date().timeIntervalSince1970 * 1000)
 
             try db.execute(sql: "INSERT INTO project VALUES ('proj_1', '/Users/test/code/test-project', NULL, 'test-project', NULL, NULL, ?, ?, NULL, '', NULL)", arguments: [now, now])
@@ -152,6 +160,10 @@ struct OpenCodeReaderTests {
             {"role":"user","time":{"created":\(now + 500)}}
             """
             try db.execute(sql: "INSERT INTO message VALUES ('msg_3', 'ses_1', ?, ?, ?)", arguments: [now + 500, now + 500, msg3Data])
+            let msg3PartData = """
+            {"text":"Latest user prompt"}
+            """
+            try db.execute(sql: "INSERT INTO part VALUES ('part_1', 'msg_3', ?)", arguments: [msg3PartData])
 
             let msg4Data = """
             {"role":"assistant","modelID":"developer-opus","providerID":"cornelis","agent":"Sisyphus","tokens":{"total":0,"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"cost":0}

@@ -82,6 +82,32 @@ final class DatabaseManager {
             try db.execute(sql: "DELETE FROM source_cursors WHERE source = 'codex'")
         }
 
+        migrator.registerMigration("v6-codex-live-sessions") { db in
+            try db.execute(sql: "DELETE FROM usage_events WHERE source = 'codex'")
+            try db.execute(sql: "DELETE FROM source_cursors WHERE source = 'codex'")
+        }
+
+        migrator.registerMigration("v7-roo-per-task") { db in
+            try db.execute(sql: "DELETE FROM usage_events WHERE source = 'roo'")
+            try db.execute(sql: "DELETE FROM source_cursors WHERE source = 'roo'")
+        }
+
+        migrator.registerMigration("v8-roo-snapshots") { db in
+            try db.create(table: "roo_task_snapshot") { t in
+                t.column("taskID", .text).primaryKey()
+                t.column("lastTokensIn", .integer).notNull().defaults(to: 0)
+                t.column("lastTokensOut", .integer).notNull().defaults(to: 0)
+                t.column("lastCacheWrites", .integer).notNull().defaults(to: 0)
+                t.column("lastCacheReads", .integer).notNull().defaults(to: 0)
+                t.column("lastCost", .double).notNull().defaults(to: 0)
+                t.column("lastTs", .integer).notNull().defaults(to: 0)
+                t.column("lastStatus", .text)
+                t.column("firstSeenAt", .datetime).notNull()
+            }
+            try db.execute(sql: "DELETE FROM usage_events WHERE source = 'roo'")
+            try db.execute(sql: "DELETE FROM source_cursors WHERE source = 'roo'")
+        }
+
         return migrator
     }
 
@@ -305,32 +331,31 @@ final class DatabaseManager {
 
     func chartData(range: ChartRange) throws -> [ChartDataPoint] {
         return try dbPool.read { db in
+            // observedAt is UTC; bucket in localtime so Swift Charts (which re-bins
+            // BarMark via local Calendar.current) agrees. Anchoring the X position to
+            // MIN(observedAt) instead let an event like 2026-04-01 00:23 UTC fall into
+            // 2026-03-31 locally, drawing April's bar on top of March's.
             let whereClause: String
-            let groupFormat: String
-            let labelFormat: String
+            let periodExpr: String
 
             switch range {
             case .week:
                 whereClause = "WHERE observedAt >= date('now', '-7 days')"
-                groupFormat = "date(observedAt)"
-                labelFormat = "%m/%d"
+                periodExpr = "date(observedAt, 'localtime')"
             case .month:
                 whereClause = "WHERE observedAt >= date('now', '-30 days')"
-                groupFormat = "date(observedAt)"
-                labelFormat = "%m/%d"
+                periodExpr = "date(observedAt, 'localtime')"
             case .year:
                 whereClause = "WHERE observedAt >= date('now', '-365 days')"
-                groupFormat = "strftime('%Y-%W', observedAt)"
-                labelFormat = "%m/%d"
+                // Sunday-anchored week start, computed in local time.
+                periodExpr = "date(observedAt, 'localtime', '-' || strftime('%w', observedAt, 'localtime') || ' days')"
             case .total:
                 whereClause = ""
-                groupFormat = "strftime('%Y-%m', observedAt)"
-                labelFormat = "%Y-%m"
+                periodExpr = "strftime('%Y-%m-01', observedAt, 'localtime')"
             }
 
             let rows = try Row.fetchAll(db, sql: """
-                SELECT \(groupFormat) as period,
-                       MIN(observedAt) as periodDate,
+                SELECT \(periodExpr) as period,
                        COALESCE(SUM(totalTokens), 0) as total,
                        COALESCE(SUM(promptTokens), 0) as prompt,
                        COALESCE(SUM(completionTokens), 0) as completion
@@ -340,17 +365,22 @@ final class DatabaseManager {
                 ORDER BY period ASC
                 """)
 
+            // Parse the period key as LOCAL midnight so the plotted Date lands inside
+            // its bucket under Calendar.current. POSIX locale keeps parsing stable.
             let formatter = DateFormatter()
-            formatter.dateFormat = labelFormat
+            formatter.dateFormat = "yyyy-MM-dd"
+            formatter.timeZone = Calendar.current.timeZone
+            formatter.locale = Locale(identifier: "en_US_POSIX")
 
             return rows.compactMap { row -> ChartDataPoint? in
-                guard let date: Date = row["periodDate"] else { return nil }
+                guard let periodKey: String = row["period"],
+                      let date = formatter.date(from: periodKey) else { return nil }
                 return ChartDataPoint(
                     date: date,
                     totalTokens: row["total"],
                     promptTokens: row["prompt"],
                     completionTokens: row["completion"],
-                    label: formatter.string(from: date)
+                    label: periodKey
                 )
             }
         }
@@ -397,6 +427,84 @@ final class DatabaseManager {
                 INSERT INTO source_cursors (source, lastCursor, lastScanAt) VALUES (?, ?, ?)
                 ON CONFLICT(source) DO UPDATE SET lastCursor = excluded.lastCursor, lastScanAt = excluded.lastScanAt
                 """, arguments: [source.rawValue, cursor, Date()])
+        }
+    }
+}
+
+extension DatabaseManager: RooTaskSnapshotStore {
+    func snapshots(for taskIDs: [String]) throws -> [String: RooTaskSnapshot] {
+        guard !taskIDs.isEmpty else { return [:] }
+
+        let placeholders = Array(repeating: "?", count: taskIDs.count).joined(separator: ", ")
+        let arguments = StatementArguments(taskIDs)
+
+        return try dbPool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT taskID, lastTokensIn, lastTokensOut, lastCacheWrites, lastCacheReads,
+                           lastCost, lastTs, lastStatus, firstSeenAt
+                    FROM roo_task_snapshot
+                    WHERE taskID IN (
+                        \(placeholders)
+                    )
+                    """,
+                arguments: arguments
+            )
+
+            var snapshotsByTaskID: [String: RooTaskSnapshot] = [:]
+            for row in rows {
+                let snapshot = RooTaskSnapshot(
+                    taskID: row["taskID"],
+                    tokensIn: row["lastTokensIn"],
+                    tokensOut: row["lastTokensOut"],
+                    cacheWrites: row["lastCacheWrites"],
+                    cacheReads: row["lastCacheReads"],
+                    totalCost: row["lastCost"],
+                    lastTimestamp: row["lastTs"],
+                    status: row["lastStatus"],
+                    firstSeenAt: row["firstSeenAt"]
+                )
+                snapshotsByTaskID[snapshot.taskID] = snapshot
+            }
+            return snapshotsByTaskID
+        }
+    }
+
+    func saveSnapshots(_ snapshots: [RooTaskSnapshot]) throws {
+        guard !snapshots.isEmpty else { return }
+
+        try dbPool.write { db in
+            for snapshot in snapshots {
+                try db.execute(
+                    sql: """
+                        INSERT INTO roo_task_snapshot (
+                            taskID, lastTokensIn, lastTokensOut, lastCacheWrites,
+                            lastCacheReads, lastCost, lastTs, lastStatus, firstSeenAt
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(taskID) DO UPDATE SET
+                            lastTokensIn = excluded.lastTokensIn,
+                            lastTokensOut = excluded.lastTokensOut,
+                            lastCacheWrites = excluded.lastCacheWrites,
+                            lastCacheReads = excluded.lastCacheReads,
+                            lastCost = excluded.lastCost,
+                            lastTs = excluded.lastTs,
+                            lastStatus = excluded.lastStatus,
+                            firstSeenAt = excluded.firstSeenAt
+                        """,
+                    arguments: [
+                        snapshot.taskID,
+                        snapshot.tokensIn,
+                        snapshot.tokensOut,
+                        snapshot.cacheWrites,
+                        snapshot.cacheReads,
+                        snapshot.totalCost,
+                        snapshot.lastTimestamp,
+                        snapshot.status,
+                        snapshot.firstSeenAt,
+                    ]
+                )
+            }
         }
     }
 }

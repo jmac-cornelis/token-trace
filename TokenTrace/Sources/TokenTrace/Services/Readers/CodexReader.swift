@@ -35,6 +35,28 @@ final class CodexReader {
         dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
     }
 
+    private struct CursorState: Codable {
+        var updatedAt: Int64
+        var threadOffsets: [String: Int]
+    }
+
+    private func decodeCursor(_ cursor: String?) -> CursorState? {
+        guard let cursor = cursor,
+              let data = cursor.data(using: .utf8),
+              let state = try? JSONDecoder().decode(CursorState.self, from: data) else {
+            return nil
+        }
+        return state
+    }
+
+    private func encodeCursor(_ state: CursorState) -> String? {
+        guard let data = try? JSONEncoder().encode(state),
+              let str = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return str
+    }
+
     func fetchEvents(since cursor: String?) -> (events: [UsageEvent], newCursor: String?) {
         guard let db = dbQueue else {
             return (events: [], newCursor: cursor)
@@ -42,7 +64,9 @@ final class CodexReader {
 
         do {
             let results = try db.read { db -> (events: [UsageEvent], newCursor: String?) in
-                var sql = """
+                var cursorState = decodeCursor(cursor) ?? CursorState(updatedAt: 0, threadOffsets: [:])
+
+                let sql = """
                     SELECT
                         id, title, cwd, model_provider, model, tokens_used,
                         source, created_at, updated_at, git_branch,
@@ -50,21 +74,13 @@ final class CodexReader {
                         rollout_path
                     FROM threads
                     WHERE tokens_used > 0
+                    ORDER BY updated_at ASC
                     """
 
-                var arguments: [DatabaseValueConvertible] = []
-
-                if let cursorValue = cursor, let cursorMs = Int64(cursorValue) {
-                    sql += " AND updated_at > ?"
-                    arguments.append(cursorMs)
-                }
-
-                sql += " ORDER BY updated_at ASC"
-
-                let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
+                let rows = try Row.fetchAll(db, sql: sql)
 
                 var events: [UsageEvent] = []
-                var latestTimestamp: String?
+                var maxUpdatedAt: Int64 = cursorState.updatedAt
 
                 for row in rows {
                     let threadId: String = row["id"]
@@ -78,6 +94,10 @@ final class CodexReader {
                     let firstMessage: String? = row["first_user_message"]
                     let rolloutPath: String? = row["rollout_path"]
 
+                    if updatedAt > maxUpdatedAt {
+                        maxUpdatedAt = updatedAt
+                    }
+
                     let projectName = cwd.flatMap { path -> String? in
                         guard !path.isEmpty else { return nil }
                         return URL(fileURLWithPath: path).lastPathComponent
@@ -88,9 +108,15 @@ final class CodexReader {
                         return trimmed.count > 80 ? String(trimmed.prefix(77)) + "..." : trimmed
                     }
 
-                    let rolloutEvents = parseRolloutEvents(rolloutPath: rolloutPath, threadId: threadId)
+                    let lastStoredIndex = cursorState.threadOffsets[threadId] ?? -1
 
-                    if rolloutEvents.isEmpty {
+                    let rolloutEvents = parseRolloutEvents(
+                        rolloutPath: rolloutPath,
+                        threadId: threadId,
+                        startIndex: lastStoredIndex + 1
+                    )
+
+                    if rolloutEvents.isEmpty && lastStoredIndex < 0 {
                         let observedAt = Date(timeIntervalSince1970: Double(createdAt))
                         let event = UsageEvent(
                             id: "codex-\(threadId)",
@@ -114,19 +140,22 @@ final class CodexReader {
                             lastPrompt: firstMessage
                         )
                         events.append(event)
-                    } else {
-                        for (index, re) in rolloutEvents.enumerated() {
+                        cursorState.threadOffsets[threadId] = -2
+                    } else if !rolloutEvents.isEmpty {
+                        let baseIndex = lastStoredIndex + 1
+                        for (offset, re) in rolloutEvents.enumerated() {
+                            let absoluteIndex = baseIndex + offset
                             let event = UsageEvent(
-                                id: "codex-\(threadId)-\(index)",
+                                id: "codex-\(threadId)-\(absoluteIndex)",
                                 observedAt: re.timestamp,
                                 source: .codex,
                                 sessionID: threadId,
                                 sessionTitle: sessionTitle,
-                                requestID: "req-\(index)",
+                                requestID: "req-\(absoluteIndex)",
                                 projectName: projectName,
                                 repoPath: cwd,
                                 provider: modelProvider,
-                                model: re.model ?? modelProvider,
+                                model: re.model ?? modelName ?? modelProvider,
                                 agent: nil,
                                 promptTokens: re.inputTokens,
                                 completionTokens: re.outputTokens,
@@ -139,12 +168,13 @@ final class CodexReader {
                             )
                             events.append(event)
                         }
+                        let newLastIndex = baseIndex + rolloutEvents.count - 1
+                        cursorState.threadOffsets[threadId] = newLastIndex
                     }
-
-                    latestTimestamp = String(updatedAt)
                 }
 
-                let newCursor = latestTimestamp ?? cursor
+                cursorState.updatedAt = maxUpdatedAt
+                let newCursor = encodeCursor(cursorState) ?? cursor
                 return (events: events, newCursor: newCursor)
             }
 
@@ -153,8 +183,6 @@ final class CodexReader {
             return (events: [], newCursor: cursor)
         }
     }
-
-    // MARK: - Rollout JSONL Parsing
 
     private struct RolloutEvent {
         let timestamp: Date
@@ -166,7 +194,7 @@ final class CodexReader {
         let model: String?
     }
 
-    private func parseRolloutEvents(rolloutPath: String?, threadId: String) -> [RolloutEvent] {
+    private func parseRolloutEvents(rolloutPath: String?, threadId: String, startIndex: Int = 0) -> [RolloutEvent] {
         guard let path = resolveRolloutPath(rolloutPath, threadId: threadId) else {
             return []
         }
@@ -189,6 +217,7 @@ final class CodexReader {
         var results: [RolloutEvent] = []
         var prevCumulativeTotal = 0
         var currentModel: String?
+        var validEntryCount = 0
 
         let lines = content.components(separatedBy: .newlines)
 
@@ -222,6 +251,12 @@ final class CodexReader {
                 continue
             }
 
+            if validEntryCount < startIndex {
+                validEntryCount += 1
+                prevCumulativeTotal = cumulativeTotal
+                continue
+            }
+
             let timestampStr = json["timestamp"] as? String ?? ""
             let timestamp = isoFormatter.date(from: timestampStr)
                 ?? isoFallback.date(from: timestampStr)
@@ -246,12 +281,11 @@ final class CodexReader {
             ))
 
             prevCumulativeTotal = cumulativeTotal
+            validEntryCount += 1
         }
 
         return results
     }
-
-    // MARK: - Rollout Path Resolution
 
     private func resolveRolloutPath(_ rolloutPath: String?, threadId: String) -> String? {
         if let rp = rolloutPath, !rp.isEmpty {
@@ -284,8 +318,6 @@ final class CodexReader {
         }
         return nil
     }
-
-    // MARK: - Health Check
 
     func healthCheck() -> SourceHealth {
         guard FileManager.default.fileExists(atPath: dbPath) else {

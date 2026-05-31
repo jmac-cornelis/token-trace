@@ -201,7 +201,8 @@ struct MenuBarDropdown: View {
                     name: "Codex",
                     tokens: usageStore.codexTokens,
                     isHealthy: usageStore.codexHealthy,
-                    icon: "sparkle"
+                    icon: "sparkle",
+                    subscriptionBased: true
                 )
                 sourceRow(
                     name: "Openclaw",
@@ -215,7 +216,7 @@ struct MenuBarDropdown: View {
         .padding(.vertical, 8)
     }
 
-    private func sourceRow(name: String, tokens: Int, isHealthy: Bool, icon: String) -> some View {
+    private func sourceRow(name: String, tokens: Int, isHealthy: Bool, icon: String, subscriptionBased: Bool = false) -> some View {
         HStack {
             Image(systemName: icon)
                 .font(.caption)
@@ -223,6 +224,15 @@ struct MenuBarDropdown: View {
                 .frame(width: 16)
             Text(name)
                 .font(.subheadline)
+            if subscriptionBased {
+                Text("subscription")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(Color.primary.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+            }
             Spacer()
             Text(UsageStore.formatTokens(tokens))
                 .font(.subheadline)

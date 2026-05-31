@@ -231,6 +231,101 @@ struct DatabaseManagerTests {
         #expect(summary.total == 500)
     }
 
+    @Test func rooMigrationClearsLegacyRowsAndCursor() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let dbPath = tempDir.appendingPathComponent("test.db").path
+        try createPreMigrationDatabase(at: dbPath)
+
+        let db = DatabaseManager(path: dbPath)
+        try db.setup()
+
+        let summary = try db.todaySummary()
+        #expect(summary.bySource[.roo] == nil)
+        #expect(summary.bySource[.opencode] == 150)
+        #expect(summary.total == 150)
+        #expect(try db.getCursor(for: .roo) == nil)
+    }
+
+    @Test func rooSnapshotStoreRoundTripsSnapshots() throws {
+        let (db, tempDir) = try makeDB()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let firstSeenAt = Date(timeIntervalSince1970: 1_700_000_000)
+        try db.saveSnapshots([
+            RooTaskSnapshot(
+                taskID: "task-1",
+                tokensIn: 120,
+                tokensOut: 80,
+                cacheWrites: 12,
+                cacheReads: 20,
+                totalCost: 1.75,
+                lastTimestamp: 1_700_000_500,
+                status: "active",
+                firstSeenAt: firstSeenAt
+            )
+        ])
+
+        let saved = try #require(db.snapshots(for: ["task-1"])["task-1"])
+        #expect(saved.tokensIn == 120)
+        #expect(saved.tokensOut == 80)
+        #expect(saved.cacheWrites == 12)
+        #expect(saved.cacheReads == 20)
+        #expect(saved.totalCost == 1.75)
+        #expect(saved.lastTimestamp == 1_700_000_500)
+        #expect(saved.status == "active")
+        #expect(saved.firstSeenAt == firstSeenAt)
+
+        try db.saveSnapshots([
+            RooTaskSnapshot(
+                taskID: "task-1",
+                tokensIn: 140,
+                tokensOut: 95,
+                cacheWrites: 14,
+                cacheReads: 25,
+                totalCost: 2.0,
+                lastTimestamp: 1_700_000_900,
+                status: "complete",
+                firstSeenAt: firstSeenAt
+            )
+        ])
+
+        let updated = try #require(db.snapshots(for: ["task-1"])["task-1"])
+        #expect(updated.tokensIn == 140)
+        #expect(updated.tokensOut == 95)
+        #expect(updated.cacheWrites == 14)
+        #expect(updated.cacheReads == 25)
+        #expect(updated.totalCost == 2.0)
+        #expect(updated.lastTimestamp == 1_700_000_900)
+        #expect(updated.status == "complete")
+        #expect(updated.firstSeenAt == firstSeenAt)
+    }
+
+    @MainActor
+    @Test func usageStoreRefreshLoadsTodaysRooTotals() throws {
+        let settings = SettingsManager.shared
+        let previousMode = settings.dataSourceMode
+        settings.dataSourceMode = .local
+        defer { settings.dataSourceMode = previousMode }
+
+        let (db, tempDir) = try makeDB()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try db.insertEvents([
+            makeEvent(source: .roo, prompt: 48_442, completion: 24_724, total: 73_166, date: Date()),
+            makeEvent(source: .opencode, prompt: 100, completion: 50, total: 150, date: Date()),
+        ])
+
+        let store = UsageStore(db: db)
+        store.refresh()
+
+        #expect(store.rooCodeTokens == 73_166)
+        #expect(store.todayTotalTokens == 73_316)
+        #expect(store.openCodeTokens == 150)
+    }
+
     private func makeEvent(
         source: UsageEvent.Source = .opencode,
         prompt: Int = 0,
@@ -264,5 +359,72 @@ struct DatabaseManagerTests {
             totalTokens: total,
             estimatedCostUSD: 0
         )
+    }
+
+    private func createPreMigrationDatabase(at path: String) throws {
+        let dbQueue = try DatabaseQueue(path: path)
+
+        var migrator = DatabaseMigrator()
+        migrator.registerMigration("v1") { db in
+            try db.create(table: "usage_events") { t in
+                t.column("id", .text).primaryKey()
+                t.column("observedAt", .datetime).notNull().indexed()
+                t.column("source", .text).notNull().indexed()
+                t.column("sessionID", .text).indexed()
+                t.column("requestID", .text)
+                t.column("projectName", .text).indexed()
+                t.column("repoPath", .text)
+                t.column("provider", .text)
+                t.column("model", .text).indexed()
+                t.column("agent", .text)
+                t.column("promptTokens", .integer).notNull().defaults(to: 0)
+                t.column("completionTokens", .integer).notNull().defaults(to: 0)
+                t.column("cachedReadTokens", .integer).notNull().defaults(to: 0)
+                t.column("cachedWriteTokens", .integer).notNull().defaults(to: 0)
+                t.column("reasoningTokens", .integer).notNull().defaults(to: 0)
+                t.column("totalTokens", .integer).notNull().defaults(to: 0)
+                t.column("estimatedCostUSD", .double).notNull().defaults(to: 0)
+            }
+
+            try db.create(index: "idx_events_source_date", on: "usage_events", columns: ["source", "observedAt"])
+            try db.create(index: "idx_events_dedupe", on: "usage_events", columns: ["source", "sessionID", "requestID"], unique: false)
+
+            try db.create(table: "source_cursors") { t in
+                t.column("source", .text).primaryKey()
+                t.column("lastCursor", .text)
+                t.column("lastScanAt", .datetime)
+            }
+        }
+        migrator.registerMigration("v2-session-title") { db in
+            try db.alter(table: "usage_events") { t in
+                t.add(column: "sessionTitle", .text)
+            }
+        }
+        migrator.registerMigration("v3-last-prompt") { db in
+            try db.alter(table: "usage_events") { t in
+                t.add(column: "lastPrompt", .text)
+            }
+        }
+        migrator.registerMigration("v4-fix-codex-timestamps") { _ in }
+        migrator.registerMigration("v5-codex-per-request") { db in
+            try db.execute(sql: "DELETE FROM usage_events WHERE source = 'codex'")
+            try db.execute(sql: "DELETE FROM source_cursors WHERE source = 'codex'")
+        }
+        migrator.registerMigration("v6-codex-live-sessions") { db in
+            try db.execute(sql: "DELETE FROM usage_events WHERE source = 'codex'")
+            try db.execute(sql: "DELETE FROM source_cursors WHERE source = 'codex'")
+        }
+
+        try migrator.migrate(dbQueue)
+
+        try dbQueue.write { db in
+            try makeEvent(source: .roo, total: 75, sessionID: "roo-legacy", date: Date()).insert(db)
+            try makeEvent(source: .roo, total: 125, sessionID: "roo-current", date: Date()).insert(db)
+            try makeEvent(source: .opencode, total: 150, sessionID: "opencode-1", date: Date()).insert(db)
+            try db.execute(
+                sql: "INSERT INTO source_cursors (source, lastCursor, lastScanAt) VALUES (?, ?, ?)",
+                arguments: [UsageEvent.Source.roo.rawValue, "{\"lastTimestamp\":123}", Date()]
+            )
+        }
     }
 }

@@ -300,7 +300,7 @@ final class UsageStore: ObservableObject {
 
         if settings.showCostEstimates {
             let todayGrafana = tokenData.dailySummaries.first { Calendar.current.isDateInToday($0.date) }
-            let modelCounts = modelBreakdown.map { (model: $0.model, count: $0.requestCount) }
+            let modelCounts = modelBreakdown.map { ModelRequestCount(model: $0.model, count: $0.requestCount) }
             costEstimate = CostEstimator.estimate(
                 totalPromptTokens: todayGrafana?.promptTokens ?? 0,
                 totalCompletionTokens: todayGrafana?.completionTokens ?? 0,
@@ -318,15 +318,14 @@ final class UsageStore: ObservableObject {
     // MARK: – Local Cost Estimation
 
     private func computeLocalCostEstimate() -> CostEstimate {
-        var modelCounts: [String: Int] = [:]
-        for session in recentSessions {
-            let model = session.model ?? "unknown"
-            modelCounts[model, default: 0] += session.eventCount
+        let modelCounts = recentSessions.map {
+            ModelRequestCount(model: $0.model, count: $0.eventCount)
         }
+
         return CostEstimator.estimate(
             totalPromptTokens: todayPromptTokens,
             totalCompletionTokens: todayCompletionTokens,
-            modelRequestCounts: modelCounts.map { (model: $0.key, count: $0.value) }
+            modelRequestCounts: modelCounts
         )
     }
 

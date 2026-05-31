@@ -6,7 +6,6 @@ struct TokenTraceApp: App {
     @StateObject private var collector: CollectorService
 
     init() {
-        // Setup database first
         do {
             try DatabaseManager.shared.setup()
         } catch {
@@ -15,6 +14,9 @@ struct TokenTraceApp: App {
 
         let store = UsageStore()
         let collectorService = CollectorService(usageStore: store)
+
+        store.refresh()
+        collectorService.start()
 
         _usageStore = StateObject(wrappedValue: store)
         _collector = StateObject(wrappedValue: collectorService)
@@ -26,7 +28,6 @@ struct TokenTraceApp: App {
                 .environmentObject(usageStore)
                 .environmentObject(collector)
                 .environmentObject(SettingsManager.shared)
-                .onAppear { collector.start() }
         } label: {
             MenuBarIcon(usageStore: usageStore)
         }

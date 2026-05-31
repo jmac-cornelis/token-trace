@@ -23,7 +23,7 @@ final class CollectorService: ObservableObject {
     init(db: DatabaseManager = .shared, usageStore: UsageStore) {
         self.db = db
         self.openCodeReader = OpenCodeReader()
-        self.rooCodeReader = RooCodeReader()
+        self.rooCodeReader = RooCodeReader(snapshotStore: db)
         self.codexReader = CodexReader()
         self.openclawReader = OpenclawReader()
         self.usageStore = usageStore
@@ -105,7 +105,7 @@ final class CollectorService: ObservableObject {
     private func collectFromRooCode() async {
         do {
             let cursor = try db.getCursor(for: .roo)
-            let (events, newCursor) = rooCodeReader.fetchEvents(since: cursor)
+            let (events, newCursor) = try rooCodeReader.fetchEvents(since: cursor)
             if !events.isEmpty {
                 try db.insertEvents(events)
             }

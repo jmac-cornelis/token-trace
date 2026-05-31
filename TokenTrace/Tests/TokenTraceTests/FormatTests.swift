@@ -114,4 +114,91 @@ struct FormatTests {
         #expect(ChartRange.year.days == 365)
         #expect(ChartRange.total.days == nil)
     }
+
+    @Test func costEstimateFiltersProviderOnlyIdentifiers() {
+        let estimate = CostEstimator.estimate(
+            totalPromptTokens: 1_200,
+            totalCompletionTokens: 800,
+            modelRequestCounts: [
+                ModelRequestCount(model: "cornelis", count: 3),
+                ModelRequestCount(model: "developer-opus", count: 2),
+                ModelRequestCount(model: "developer-sonnet", count: 1),
+            ]
+        )
+
+        #expect(estimate.perModelEstimates.map(\.modelName) == ["developer-opus", "developer-sonnet"])
+        #expect(estimate.perModelEstimates.map(\.requestCount) == [2, 1])
+    }
+
+    @Test func costEstimateFallsBackToUnknownWithoutVisibleRows() {
+        let estimate = CostEstimator.estimate(
+            totalPromptTokens: 2_000,
+            totalCompletionTokens: 1_000,
+            modelRequestCounts: [
+                ModelRequestCount(model: "cornelis", count: 5),
+            ]
+        )
+
+        let expectedCost = CostEstimator.estimateCostFromEvents(
+            promptTokens: 2_000,
+            completionTokens: 1_000,
+            cachedReadTokens: 0,
+            cachedWriteTokens: 0,
+            reasoningTokens: 0,
+            model: nil
+        )
+
+        #expect(estimate.perModelEstimates.isEmpty)
+        #expect(estimate.totalEstimatedCost == expectedCost)
+    }
+
+    @Test func costEstimateNormalizesKnownModelsAndAggregatesDuplicates() {
+        let estimate = CostEstimator.estimate(
+            totalPromptTokens: 900,
+            totalCompletionTokens: 600,
+            modelRequestCounts: [
+                ModelRequestCount(model: "  Developer-Opus ", count: 1),
+                ModelRequestCount(model: "developer-opus", count: 2),
+                ModelRequestCount(model: "CORNELIS", count: 4),
+                ModelRequestCount(model: "", count: 3),
+            ]
+        )
+
+        #expect(estimate.perModelEstimates.map(\.modelName) == ["developer-opus"])
+        #expect(estimate.perModelEstimates.map(\.requestCount) == [3])
+    }
+
+    @Test func estimateCostFromEventsMatchesKnownModelsCaseInsensitively() {
+        let uppercaseCost = CostEstimator.estimateCostFromEvents(
+            promptTokens: 1_000,
+            completionTokens: 500,
+            cachedReadTokens: 0,
+            cachedWriteTokens: 0,
+            reasoningTokens: 0,
+            model: "Developer-Opus"
+        )
+        let canonicalCost = CostEstimator.estimateCostFromEvents(
+            promptTokens: 1_000,
+            completionTokens: 500,
+            cachedReadTokens: 0,
+            cachedWriteTokens: 0,
+            reasoningTokens: 0,
+            model: "developer-opus"
+        )
+
+        #expect(uppercaseCost == canonicalCost)
+    }
+
+    @Test func estimateCostFromEventsUsesModelSpecificCacheReadPricing() {
+        let cost = CostEstimator.estimateCostFromEvents(
+            promptTokens: 1_000_000,
+            completionTokens: 1_000_000,
+            cachedReadTokens: 400_000,
+            cachedWriteTokens: 100_000,
+            reasoningTokens: 0,
+            model: "developer-deepseek"
+        )
+
+        #expect(abs(cost - 5.7925) < 0.000001)
+    }
 }
