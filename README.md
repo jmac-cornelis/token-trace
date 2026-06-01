@@ -1,6 +1,6 @@
 # Token Trace
 
-A native macOS menu bar app that locally aggregates token usage across OpenCode, Roo Code, OpenAI Codex, and Openclaw gateway — with live summaries, per-project drilldowns, session-level history, and usage charts.
+A native macOS menu bar app that locally aggregates token usage across OpenCode, Roo Code, OpenAI Codex, Openclaw gateway, and Continue.dev — with live summaries, per-project drilldowns, session-level history, and usage charts.
 
 Think **iStat Menus for AI token usage**.
 
@@ -10,7 +10,7 @@ Think **iStat Menus for AI token usage**.
 
 - **Menu bar icon** with live token count
 - **Today's total** with input/output breakdown
-- **Per-source totals** — OpenCode, Roo Code, Codex, and Openclaw tracked separately
+- **Per-source totals** — OpenCode, Roo Code, Codex, Openclaw, and Continue.dev tracked separately
 - **Token type breakdown** — prompt, completion, cached, reasoning
 - **Usage chart** — bar graph with 7D / 30D / 1Y / All range picker
 - **Recent sessions** — expandable with per-session token details and descriptive titles
@@ -27,7 +27,9 @@ Roo Code JSON (read-only) ──→ RooCodeReader ─┤
                                              ├→ CollectorService → SQLite → UsageStore → SwiftUI
 Codex DB (read-only) ──→ CodexReader ────────┤
                                              │
-Openclaw JSONL (read-only) ──→ OpenclawReader┘
+Openclaw JSONL (read-only) ──→ OpenclawReader┤
+                                             │
+Continue DB (read-only) ──→ ContinueReader ──┘
 ```
 
 Three-layer design:
@@ -47,6 +49,8 @@ Three-layer design:
 **OpenAI Codex** — Reads from `~/.codex/state_5.sqlite` (SQLite, read-only). Shared by both the Codex CLI and the Codex VS Code extension (they use the same database). Extracts `tokens_used` from the `threads` table, plus session title, working directory, model, and git info. Also parses rollout JSONL files from `~/.codex/sessions/` for per-turn `output_tokens` and `reasoning_output_tokens` breakdown when available.
 
 **Openclaw** — Reads session transcript JSONL files from `/tmp/agents/{agentId}/sessions/`. Openclaw is a local AI gateway proxy that logs each LLM response with `usage: {input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, total_tokens, cost}`. Cursor-based incremental reads using file offset tracking.
+
+**Continue.dev** — Reads from `~/.continue/dev_data/devdata.sqlite` (SQLite, read-only). Continue is a VS Code and JetBrains extension that logs each generation to the `tokens_generated` table (`model`, `provider`, `tokens_prompt`, `tokens_generated`, `timestamp`). Cursor-based incremental reads using the monotonic auto-increment `id`. Continue does not persist cost, cache, or project/session metadata, so those fields remain empty (cost is derived later via `CostEstimator`).
 
 ### Storage
 
@@ -86,7 +90,7 @@ cd TokenTrace
 swift test
 ```
 
-52 tests across 5 suites covering database operations, all four readers, formatting, and model logic.
+69 tests across 6 suites covering database operations, all five readers, formatting, and model logic.
 
 ## Project Structure
 
@@ -111,7 +115,8 @@ TokenTrace/
 │   │       ├── OpenCodeReader.swift     # Reads OpenCode's SQLite DB
 │   │       ├── RooCodeReader.swift      # Reads Roo Code's JSON files
 │   │       ├── CodexReader.swift        # Reads Codex CLI/extension SQLite + JSONL
-│   │       └── OpenclawReader.swift     # Reads Openclaw gateway JSONL transcripts
+│   │       ├── OpenclawReader.swift     # Reads Openclaw gateway JSONL transcripts
+│   │       └── ContinueReader.swift     # Reads Continue.dev's SQLite DB
 │   └── Views/
 │       ├── MenuBarDropdown.swift        # Main dropdown UI
 │       ├── MenuBarIcon.swift            # Menu bar label
@@ -121,6 +126,7 @@ TokenTrace/
     ├── OpenCodeReaderTests.swift        # 8 tests: fetch, cursor, health, mock DB
     ├── RooCodeReaderTests.swift         # 7 tests: deltas, cursor, fields, health
     ├── OpenclawReaderTests.swift        # 13 tests: JSONL parsing, cursor, multi-agent
+    ├── ContinueReaderTests.swift        # 6 tests: fetch, cursor, timestamp, health
     └── FormatTests.swift                # 10 tests: formatting, display names, models
 ```
 
@@ -138,6 +144,8 @@ When you use any supported tool, every LLM API call returns a `usage` field in t
 
 - **Openclaw** logs each proxied LLM response as a JSONL line in `/tmp/agents/{agentId}/sessions/{sessionId}.jsonl`. Each assistant message includes `usage: {input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, total_tokens, cost}`.
 
+- **Continue.dev** stores them in a SQLite database (`~/.continue/dev_data/devdata.sqlite`), shared across its VS Code and JetBrains extensions. Each generation is appended to the `tokens_generated` table with `{model, provider, tokens_prompt, tokens_generated, timestamp}`. We read new rows incrementally by tracking the auto-increment `id`. Continue does not record cost, cache, or project metadata, so prompt and completion tokens are the only counts available.
+
 Token Trace polls these sources every 5 seconds, normalizes the data into a common format, and writes it to its own SQLite database for aggregation and display.
 
 ### Is this guaranteed to be only my tokens?
@@ -145,7 +153,7 @@ Token Trace polls these sources every 5 seconds, normalizes the data into a comm
 Yes. Token Trace reads exclusively from local files on your machine:
 
 - All source paths are user-local directories
-- OpenCode's and Codex's databases are opened with `readonly = true` — we never write to them
+- OpenCode's, Codex's, and Continue's databases are opened with `readonly = true` — we never write to them
 - Roo Code's and Openclaw's files are read via standard file I/O — never modified
 - Token Trace makes **zero network calls** — no HTTP, no sockets, no telemetry
 - Our own database lives at `~/Library/Application Support/TokenTrace/token-trace.db`

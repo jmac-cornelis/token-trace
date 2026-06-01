@@ -28,6 +28,9 @@ struct UsageEvent: Codable, FetchableRecord, PersistableRecord, Identifiable {
         case roo
         case codex
         case openclaw
+        // `continue` is a Swift reserved keyword; backticks are required at the
+        // declaration site. The raw value persisted to the DB is still "continue".
+        case `continue`
     }
 
     static let databaseTableName = "usage_events"

@@ -28,6 +28,7 @@ final class UsageStore: ObservableObject {
     @Published var rooCodeTokens: Int = 0
     @Published var codexTokens: Int = 0
     @Published var openclawTokens: Int = 0
+    @Published var continueTokens: Int = 0
 
     // MARK: – Sessions & Metadata
 
@@ -51,11 +52,13 @@ final class UsageStore: ObservableObject {
     @Published var rooCodeHealth: SourceHealth?
     @Published var codexHealth: SourceHealth?
     @Published var openclawHealth: SourceHealth?
+    @Published var continueHealth: SourceHealth?
 
     var openCodeHealthy: Bool { openCodeHealth?.isHealthy ?? false }
     var rooCodeHealthy: Bool { rooCodeHealth?.isHealthy ?? false }
     var codexHealthy: Bool { codexHealth?.isHealthy ?? false }
     var openclawHealthy: Bool { openclawHealth?.isHealthy ?? false }
+    var continueHealthy: Bool { continueHealth?.isHealthy ?? false }
 
     // MARK: – Cost & Grafana State
 
@@ -116,6 +119,7 @@ final class UsageStore: ObservableObject {
             rooCodeTokens = summary.bySource[.roo] ?? 0
             codexTokens = summary.bySource[.codex] ?? 0
             openclawTokens = summary.bySource[.openclaw] ?? 0
+            continueTokens = summary.bySource[.continue] ?? 0
             recentSessions = try db.recentSessions(limit: 10)
             dailySummaries = try db.dailySummaries(days: 14)
             loadChartData()
@@ -167,6 +171,7 @@ final class UsageStore: ObservableObject {
             rooCodeTokens = 0
             codexTokens = 0
             openclawTokens = 0
+            continueTokens = 0
             rangeTotalTokens = 0
             rangePromptTokens = 0
             rangeCompletionTokens = 0
@@ -258,6 +263,7 @@ final class UsageStore: ObservableObject {
         rooCodeTokens = 0
         codexTokens = 0
         openclawTokens = 0
+        continueTokens = 0
 
         dailySummaries = tokenData.dailySummaries.map { day in
             DailySummary(

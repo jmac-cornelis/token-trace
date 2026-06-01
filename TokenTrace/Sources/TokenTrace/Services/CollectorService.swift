@@ -8,6 +8,7 @@ final class CollectorService: ObservableObject {
     private let rooCodeReader: RooCodeReader
     private let codexReader: CodexReader
     private let openclawReader: OpenclawReader
+    private let continueReader: ContinueReader
     private let usageStore: UsageStore
     private var timer: Timer?
     private var isRunning = false
@@ -26,6 +27,7 @@ final class CollectorService: ObservableObject {
         self.rooCodeReader = RooCodeReader(snapshotStore: db)
         self.codexReader = CodexReader()
         self.openclawReader = OpenclawReader()
+        self.continueReader = ContinueReader()
         self.usageStore = usageStore
 
         settingsCancellable = SettingsManager.shared.$dataSourceMode
@@ -72,6 +74,7 @@ final class CollectorService: ObservableObject {
             await collectFromRooCode()
             await collectFromCodex()
             await collectFromOpenclaw()
+            await collectFromContinue()
             usageStore.refresh()
         } else if mode == .grafana {
             usageStore.refresh()
@@ -161,6 +164,29 @@ final class CollectorService: ObservableObject {
         } catch {
             usageStore.openclawHealth = SourceHealth(
                 source: .openclaw,
+                isHealthy: false,
+                lastEventTime: nil,
+                errorMessage: error.localizedDescription,
+                eventCount: 0
+            )
+        }
+    }
+
+    private func collectFromContinue() async {
+        do {
+            try continueReader.connect()
+            let cursor = try db.getCursor(for: .continue)
+            let (events, newCursor) = continueReader.fetchEvents(since: cursor)
+            if !events.isEmpty {
+                try db.insertEvents(events)
+            }
+            if let newCursor = newCursor {
+                try db.setCursor(for: .continue, cursor: newCursor)
+            }
+            usageStore.continueHealth = continueReader.healthCheck()
+        } catch {
+            usageStore.continueHealth = SourceHealth(
+                source: .continue,
                 isHealthy: false,
                 lastEventTime: nil,
                 errorMessage: error.localizedDescription,

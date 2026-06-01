@@ -210,6 +210,12 @@ struct MenuBarDropdown: View {
                     isHealthy: usageStore.openclawHealthy,
                     icon: "network"
                 )
+                sourceRow(
+                    name: "Continue",
+                    tokens: usageStore.continueTokens,
+                    isHealthy: usageStore.continueHealthy,
+                    icon: "arrow.triangle.branch"
+                )
             }
         }
         .padding(.horizontal, 16)
@@ -708,6 +714,7 @@ struct MenuBarDropdown: View {
         case .roo: return .purple
         case .codex: return .green
         case .openclaw: return .orange
+        case .continue: return .pink
         }
     }
 
@@ -717,6 +724,7 @@ struct MenuBarDropdown: View {
         case .roo: return "Roo"
         case .codex: return "Cdx"
         case .openclaw: return "OClw"
+        case .continue: return "Cont"
         }
     }
 
