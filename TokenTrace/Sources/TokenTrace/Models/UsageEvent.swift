@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 
 /// A single token usage event from any source
-struct UsageEvent: Codable, FetchableRecord, PersistableRecord, Identifiable {
+struct UsageEvent: Codable, FetchableRecord, PersistableRecord, Identifiable, Sendable {
     var id: String
     var observedAt: Date
     var source: Source
@@ -20,12 +20,14 @@ struct UsageEvent: Codable, FetchableRecord, PersistableRecord, Identifiable {
     var cachedWriteTokens: Int
     var reasoningTokens: Int
     var totalTokens: Int
+    // New (non-re-sent) input tokens for this turn. Authoritatively overwritten by
+    // DatabaseManager.insertEvents' reset-aware delta; readers must NOT set it.
+    var newInputTokens: Int = 0
     var estimatedCostUSD: Double
     var lastPrompt: String?
 
-    enum Source: String, Codable, DatabaseValueConvertible {
+    enum Source: String, Codable, DatabaseValueConvertible, Sendable {
         case opencode
-        case roo
         case codex
         case openclaw
         // `continue` is a Swift reserved keyword; backticks are required at the

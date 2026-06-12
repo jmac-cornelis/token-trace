@@ -9,6 +9,7 @@ final class UsageStore: ObservableObject {
     private let db: DatabaseManager
     private let settings = SettingsManager.shared
     private var grafanaTask: Task<Void, Never>?
+    private var localTask: Task<Void, Never>?
 
     // MARK: – Today's Token Counts
 
@@ -19,13 +20,14 @@ final class UsageStore: ObservableObject {
     @Published var todayReasoningTokens: Int = 0
     @Published var todayCachedReadTokens: Int = 0
     @Published var todayCachedWriteTokens: Int = 0
+    @Published var todayUniqueWork: Int = 0
     @Published var todayBillableTokens: BillableTokens?
     @Published var todayEstimatedCost: Double = 0
+    @Published var todayCacheModeledCost: Double = 0
 
     // MARK: – Per-Source Breakdowns
 
     @Published var openCodeTokens: Int = 0
-    @Published var rooCodeTokens: Int = 0
     @Published var codexTokens: Int = 0
     @Published var openclawTokens: Int = 0
     @Published var continueTokens: Int = 0
@@ -43,19 +45,18 @@ final class UsageStore: ObservableObject {
     @Published var rangeTotalTokens: Int = 0
     @Published var rangePromptTokens: Int = 0
     @Published var rangeCompletionTokens: Int = 0
+    @Published var rangeUniqueWork: Int = 0
     @Published var rangeBillableTokens: BillableTokens?
     @Published var rangeEstimatedCost: Double = 0
 
     // MARK: – Source Health
 
     @Published var openCodeHealth: SourceHealth?
-    @Published var rooCodeHealth: SourceHealth?
     @Published var codexHealth: SourceHealth?
     @Published var openclawHealth: SourceHealth?
     @Published var continueHealth: SourceHealth?
 
     var openCodeHealthy: Bool { openCodeHealth?.isHealthy ?? false }
-    var rooCodeHealthy: Bool { rooCodeHealth?.isHealthy ?? false }
     var codexHealthy: Bool { codexHealth?.isHealthy ?? false }
     var openclawHealthy: Bool { openclawHealth?.isHealthy ?? false }
     var continueHealthy: Bool { continueHealth?.isHealthy ?? false }
@@ -86,20 +87,26 @@ final class UsageStore: ObservableObject {
             grafanaTask?.cancel()
             grafanaTask = nil
             isLoadingGrafana = false
-            refreshFromLocal()
+            localTask?.cancel()
+            localTask = Task { await self.refreshFromLocal() }
         case .grafana:
             refreshFromGrafana()
         }
     }
 
+    // Awaitable refresh: refresh() is fire-and-forget, so tests await this instead.
+    func refreshNow() async {
+        await refreshFromLocal()
+    }
+
     // MARK: – Local Refresh
 
-    private func refreshFromLocal() {
+    private func refreshFromLocal() async {
         dataSourceLabel = "Client-Side"
         grafanaError = nil
 
         do {
-            let summary = try db.todaySummary()
+            let summary = try await db.todaySummary()
             todayTotalTokens = summary.total
             todayPromptTokens = summary.prompt
             todayCompletionTokens = summary.completion
@@ -107,7 +114,17 @@ final class UsageStore: ObservableObject {
             todayReasoningTokens = summary.reasoning
             todayCachedReadTokens = summary.cachedRead
             todayCachedWriteTokens = summary.cachedWrite
+            todayUniqueWork = summary.newInput + summary.completion + summary.reasoning
             todayEstimatedCost = summary.estimatedCost
+            todayCacheModeledCost = CostEstimator.estimateCacheModeledCost(
+                promptTokens: summary.prompt,
+                newInputTokens: summary.newInput,
+                completionTokens: summary.completion,
+                cachedReadTokens: summary.cachedRead,
+                cachedWriteTokens: summary.cachedWrite,
+                reasoningTokens: summary.reasoning,
+                model: nil
+            )
             todayBillableTokens = CostEstimator.computeBillableTokens(
                 promptTokens: summary.prompt,
                 completionTokens: summary.completion,
@@ -116,13 +133,12 @@ final class UsageStore: ObservableObject {
                 reasoningTokens: summary.reasoning
             )
             openCodeTokens = summary.bySource[.opencode] ?? 0
-            rooCodeTokens = summary.bySource[.roo] ?? 0
             codexTokens = summary.bySource[.codex] ?? 0
             openclawTokens = summary.bySource[.openclaw] ?? 0
             continueTokens = summary.bySource[.continue] ?? 0
-            recentSessions = try db.recentSessions(limit: 10)
-            dailySummaries = try db.dailySummaries(days: 14)
-            loadChartData()
+            recentSessions = try await db.recentSessions(limit: 10)
+            dailySummaries = try await db.dailySummaries(days: 14)
+            await loadChartDataAsync()
             lastRefreshTime = Date()
 
             if settings.showCostEstimates {
@@ -167,14 +183,16 @@ final class UsageStore: ObservableObject {
             todayCompletionTokens = 0
             todayCachedTokens = 0
             todayReasoningTokens = 0
+            todayUniqueWork = 0
+            todayCacheModeledCost = 0
             openCodeTokens = 0
-            rooCodeTokens = 0
             codexTokens = 0
             openclawTokens = 0
             continueTokens = 0
             rangeTotalTokens = 0
             rangePromptTokens = 0
             rangeCompletionTokens = 0
+            rangeUniqueWork = 0
             chartData = []
             dailySummaries = []
             recentSessions = []
@@ -258,9 +276,10 @@ final class UsageStore: ObservableObject {
             reasoningTokens: 0
         )
         todayEstimatedCost = 0
+        todayUniqueWork = 0
+        todayCacheModeledCost = 0
 
         openCodeTokens = tokenData.totalTokens
-        rooCodeTokens = 0
         codexTokens = 0
         openclawTokens = 0
         continueTokens = 0
@@ -270,6 +289,7 @@ final class UsageStore: ObservableObject {
                 date: day.date,
                 totalTokens: day.totalTokens,
                 promptTokens: day.promptTokens,
+                newInputTokens: 0,
                 completionTokens: day.completionTokens,
                 cachedTokens: 0,
                 reasoningTokens: 0,
@@ -283,6 +303,7 @@ final class UsageStore: ObservableObject {
         rangeTotalTokens = tokenData.totalTokens
         rangePromptTokens = tokenData.totalPromptTokens
         rangeCompletionTokens = tokenData.totalCompletionTokens
+        rangeUniqueWork = 0
         rangeBillableTokens = CostEstimator.computeBillableTokens(
             promptTokens: tokenData.totalPromptTokens,
             completionTokens: tokenData.totalCompletionTokens,
@@ -299,6 +320,7 @@ final class UsageStore: ObservableObject {
                 date: day.date,
                 totalTokens: day.totalTokens,
                 promptTokens: day.promptTokens,
+                newInputTokens: 0,
                 completionTokens: day.completionTokens,
                 label: fmt.string(from: day.date)
             )
@@ -353,12 +375,18 @@ final class UsageStore: ObservableObject {
 
     func loadChartData() {
         if settings.dataSourceMode == .grafana { return }
+        Task { await loadChartDataAsync() }
+    }
+
+    private func loadChartDataAsync() async {
+        if settings.dataSourceMode == .grafana { return }
         do {
-            chartData = try db.chartData(range: chartRange)
-            let summary = try db.rangeSummary(range: chartRange)
+            chartData = try await db.chartData(range: chartRange)
+            let summary = try await db.rangeSummary(range: chartRange)
             rangeTotalTokens = summary.total
             rangePromptTokens = summary.prompt
             rangeCompletionTokens = summary.completion
+            rangeUniqueWork = summary.newInput + summary.completion + summary.reasoning
             rangeBillableTokens = CostEstimator.computeBillableTokens(
                 promptTokens: summary.prompt,
                 completionTokens: summary.completion,
@@ -388,11 +416,13 @@ final class UsageStore: ObservableObject {
     }
 
     func loadSessionsForDate(_ date: Date) {
-        do {
-            selectedDaySessions = try db.sessionsForDate(date)
-            selectedDaySourceTotals = try db.sourceTotalsForDate(date)
-        } catch {
-            logger.error("Failed to load sessions for date: \(error)")
+        Task {
+            do {
+                selectedDaySessions = try await db.sessionsForDate(date)
+                selectedDaySourceTotals = try await db.sourceTotalsForDate(date)
+            } catch {
+                logger.error("Failed to load sessions for date: \(error)")
+            }
         }
     }
 }

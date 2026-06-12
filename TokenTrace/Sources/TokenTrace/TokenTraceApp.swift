@@ -12,6 +12,8 @@ struct TokenTraceApp: App {
             fatalError("Failed to setup database: \(error)")
         }
 
+        CostEstimator.reloadConfiguredPricing()
+
         let store = UsageStore()
         let collectorService = CollectorService(usageStore: store)
 

@@ -1,9 +1,11 @@
 import Foundation
 
-struct DailySummary: Identifiable {
+struct DailySummary: Identifiable, Sendable {
     let date: Date
     let totalTokens: Int
     let promptTokens: Int
+    // Per-turn input excluding the re-sent conversation prefix that promptTokens recounts each turn.
+    let newInputTokens: Int
     let completionTokens: Int
     let cachedTokens: Int
     let reasoningTokens: Int
@@ -11,6 +13,10 @@ struct DailySummary: Identifiable {
     let cachedReadTokens: Int
     let cachedWriteTokens: Int
     let estimatedCostUSD: Double
+
+    var uniqueWork: Int {
+        newInputTokens + completionTokens + reasoningTokens
+    }
 
     var billableTokens: BillableTokens {
         CostEstimator.computeBillableTokens(

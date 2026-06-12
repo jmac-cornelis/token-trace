@@ -7,9 +7,10 @@ struct MenuBarIcon: View {
         HStack(spacing: 4) {
             Image(systemName: "chart.bar.fill")
 
-            // Show compact token count if > 0
-            if usageStore.todayTotalTokens > 0 {
-                Text(UsageStore.formatTokens(usageStore.todayTotalTokens))
+            // Display unique work (new input + output + reasoning), not the provider
+            // total, which double-counts re-sent context on every turn.
+            if usageStore.todayUniqueWork > 0 {
+                Text(UsageStore.formatTokens(usageStore.todayUniqueWork))
                     .font(.caption2)
                     .monospacedDigit()
             }

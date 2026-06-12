@@ -1,6 +1,6 @@
 import Foundation
 
-struct SourceHealth {
+struct SourceHealth: Sendable {
     let source: UsageEvent.Source
     var isHealthy: Bool
     var lastEventTime: Date?

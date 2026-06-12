@@ -1,13 +1,19 @@
 import Foundation
 
-struct ChartDataPoint: Identifiable {
+struct ChartDataPoint: Identifiable, Sendable {
     let date: Date
     let totalTokens: Int
     let promptTokens: Int
+    // Per-turn input excluding the re-sent conversation prefix that promptTokens recounts each turn.
+    let newInputTokens: Int
     let completionTokens: Int
     let label: String
 
     var id: String { label }
+
+    var uniqueWork: Int {
+        newInputTokens + completionTokens
+    }
 }
 
 enum ChartRange: String, CaseIterable, Identifiable {

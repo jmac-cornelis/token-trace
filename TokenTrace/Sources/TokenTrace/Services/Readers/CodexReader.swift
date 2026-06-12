@@ -158,7 +158,10 @@ final class CodexReader {
                                 model: re.model ?? modelName ?? modelProvider,
                                 agent: nil,
                                 promptTokens: re.inputTokens,
-                                completionTokens: re.outputTokens,
+                                // Codex output_tokens includes reasoning; we track reasoning
+                                // separately, so subtract it to keep completion reasoning-free
+                                // (the cost layer's keystone: completion never double-counts reasoning).
+                                completionTokens: max(0, re.outputTokens - re.reasoningTokens),
                                 cachedReadTokens: re.cachedInputTokens,
                                 cachedWriteTokens: 0,
                                 reasoningTokens: re.reasoningTokens,

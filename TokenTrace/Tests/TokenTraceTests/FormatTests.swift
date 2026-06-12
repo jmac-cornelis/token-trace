@@ -28,7 +28,7 @@ struct FormatTests {
         let session = SessionSummary(
             id: "ses_123", source: .opencode, title: "Fix auth middleware",
             projectName: "my-project", model: nil, agent: nil,
-            totalTokens: 0, promptTokens: 0, completionTokens: 0,
+            totalTokens: 0, promptTokens: 0, newInputTokens: 0, completionTokens: 0,
             cachedTokens: 0, reasoningTokens: 0,
             cachedReadTokens: 0, cachedWriteTokens: 0, estimatedCostUSD: 0,
             eventCount: 0, firstSeen: Date(), lastSeen: Date(), lastPrompt: nil
@@ -41,7 +41,7 @@ struct FormatTests {
         let session = SessionSummary(
             id: "ses_123", source: .opencode, title: longTitle,
             projectName: nil, model: nil, agent: nil,
-            totalTokens: 0, promptTokens: 0, completionTokens: 0,
+            totalTokens: 0, promptTokens: 0, newInputTokens: 0, completionTokens: 0,
             cachedTokens: 0, reasoningTokens: 0,
             cachedReadTokens: 0, cachedWriteTokens: 0, estimatedCostUSD: 0,
             eventCount: 0, firstSeen: Date(), lastSeen: Date(), lastPrompt: nil
@@ -54,7 +54,7 @@ struct FormatTests {
         let session = SessionSummary(
             id: "ses_123", source: .opencode, title: nil,
             projectName: "my-project", model: nil, agent: nil,
-            totalTokens: 0, promptTokens: 0, completionTokens: 0,
+            totalTokens: 0, promptTokens: 0, newInputTokens: 0, completionTokens: 0,
             cachedTokens: 0, reasoningTokens: 0,
             cachedReadTokens: 0, cachedWriteTokens: 0, estimatedCostUSD: 0,
             eventCount: 0, firstSeen: Date(), lastSeen: Date(), lastPrompt: nil
@@ -66,7 +66,7 @@ struct FormatTests {
         let session = SessionSummary(
             id: "ses_123", source: .opencode, title: nil,
             projectName: nil, model: nil, agent: nil,
-            totalTokens: 0, promptTokens: 0, completionTokens: 0,
+            totalTokens: 0, promptTokens: 0, newInputTokens: 0, completionTokens: 0,
             cachedTokens: 0, reasoningTokens: 0,
             cachedReadTokens: 0, cachedWriteTokens: 0, estimatedCostUSD: 0,
             eventCount: 0, firstSeen: Date(), lastSeen: Date(), lastPrompt: nil
@@ -76,7 +76,7 @@ struct FormatTests {
 
     @Test func dailySummaryIsToday() {
         let today = DailySummary(
-            date: Date(), totalTokens: 100, promptTokens: 50,
+            date: Date(), totalTokens: 100, promptTokens: 50, newInputTokens: 0,
             completionTokens: 50, cachedTokens: 0, reasoningTokens: 0, sessionCount: 1,
             cachedReadTokens: 0, cachedWriteTokens: 0, estimatedCostUSD: 0
         )
@@ -84,7 +84,7 @@ struct FormatTests {
 
         let yesterday = DailySummary(
             date: Calendar.current.date(byAdding: .day, value: -1, to: Date())!,
-            totalTokens: 100, promptTokens: 50, completionTokens: 50,
+            totalTokens: 100, promptTokens: 50, newInputTokens: 0, completionTokens: 50,
             cachedTokens: 0, reasoningTokens: 0, sessionCount: 1,
             cachedReadTokens: 0, cachedWriteTokens: 0, estimatedCostUSD: 0
         )
@@ -93,7 +93,7 @@ struct FormatTests {
 
     @Test func dailySummaryFormattedDate() {
         let today = DailySummary(
-            date: Date(), totalTokens: 0, promptTokens: 0,
+            date: Date(), totalTokens: 0, promptTokens: 0, newInputTokens: 0,
             completionTokens: 0, cachedTokens: 0, reasoningTokens: 0, sessionCount: 0,
             cachedReadTokens: 0, cachedWriteTokens: 0, estimatedCostUSD: 0
         )
@@ -101,7 +101,7 @@ struct FormatTests {
 
         let yesterday = DailySummary(
             date: Calendar.current.date(byAdding: .day, value: -1, to: Date())!,
-            totalTokens: 0, promptTokens: 0, completionTokens: 0,
+            totalTokens: 0, promptTokens: 0, newInputTokens: 0, completionTokens: 0,
             cachedTokens: 0, reasoningTokens: 0, sessionCount: 0,
             cachedReadTokens: 0, cachedWriteTokens: 0, estimatedCostUSD: 0
         )
