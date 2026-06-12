@@ -32,7 +32,7 @@ struct ModelPricing {
 /// - Cached write:    1.25× (25% surcharge on first cache fill)
 ///
 /// Output tokens (completion + reasoning) are always billed at full rate.
-struct BillableTokens {
+struct BillableTokens: Sendable {
     let uncachedInput: Int
     let cachedReadInput: Int
     let cachedWriteInput: Int
@@ -104,6 +104,8 @@ enum CostEstimator {
         ModelPricing(modelName: "gpt-5.4",                                  inputPricePerMillion: 2.5,   outputPricePerMillion: 15.0),
         ModelPricing(modelName: "gpt-5.4-xhigh",                           inputPricePerMillion: 2.5,   outputPricePerMillion: 15.0),
         ModelPricing(modelName: "assistant-gpt-5.4",                        inputPricePerMillion: 2.5,   outputPricePerMillion: 15.0),
+        ModelPricing(modelName: "gpt-5.5",                                  inputPricePerMillion: 2.5,   outputPricePerMillion: 15.0),
+        ModelPricing(modelName: "gpt-5.5-xhigh",                           inputPricePerMillion: 2.5,   outputPricePerMillion: 15.0),
 
         // --- Google Gemini ---
         ModelPricing(modelName: "gemini-3-1-pro",                           inputPricePerMillion: 2.0,   outputPricePerMillion: 12.0),
@@ -146,6 +148,53 @@ enum CostEstimator {
         outputPricePerMillion: 15.0
     )
 
+    // MARK: - Model Aliases
+
+    /// Maps stored model strings to their priced equivalent when the stored name
+    /// has no pricing entry of its own. Keys/values are lowercased; the value
+    /// must resolve in the active pricing table. Example: OpenCode stores
+    /// "developer-flash", but the priced config key is "developer-gemini-flash".
+    static let modelAliases: [String: String] = [
+        "developer-flash": "developer-gemini-flash",
+    ]
+
+    // MARK: - Dynamic (config-driven) Pricing
+
+    /// Active table for all estimation methods. `reloadConfiguredPricing()`
+    /// overlays `opencode.json` prices on top of these defaults at launch.
+    /// `nonisolated(unsafe)`: written once at startup before any reader runs,
+    /// read-only thereafter — annotating it otherwise would invite a bogus
+    /// "fix" that adds a real data race.
+    nonisolated(unsafe) static var configuredPricingTable: [ModelPricing] = defaultPricingTable
+
+    /// Overlays `opencode.json` prices on the built-in defaults (config wins
+    /// per model name; defaults remain fallbacks). Missing/unparseable config
+    /// leaves the defaults untouched. `explicitPath` overrides the search path.
+    @discardableResult
+    static func reloadConfiguredPricing(from explicitPath: String? = nil) -> [ModelPricing] {
+        let configured = PricingConfigLoader.loadPricing(from: explicitPath)
+        configuredPricingTable = mergePricing(defaults: defaultPricingTable, overrides: configured)
+        return configuredPricingTable
+    }
+
+    /// Merges two pricing lists; `overrides` win over `defaults` for the same
+    /// model name (case-insensitive), default ordering preserved.
+    static func mergePricing(defaults: [ModelPricing], overrides: [ModelPricing]) -> [ModelPricing] {
+        var byName: [String: ModelPricing] = [:]
+        var order: [String] = []
+
+        func upsert(_ pricing: ModelPricing) {
+            let key = pricing.modelName.lowercased()
+            if byName[key] == nil { order.append(key) }
+            byName[key] = pricing
+        }
+
+        defaults.forEach(upsert)
+        overrides.forEach(upsert)
+
+        return order.compactMap { byName[$0] }
+    }
+
     // MARK: - Estimation
 
     /// Estimate costs by distributing aggregate tokens across models proportionally
@@ -161,7 +210,7 @@ enum CostEstimator {
         totalPromptTokens: Int,
         totalCompletionTokens: Int,
         modelRequestCounts: [ModelRequestCount],
-        pricingTable: [ModelPricing] = defaultPricingTable
+        pricingTable: [ModelPricing] = configuredPricingTable
     ) -> CostEstimate {
         let pricingLookup = pricingLookup(from: pricingTable)
         let sanitizedRequestCounts = sanitizeModelRequestCounts(
@@ -300,7 +349,14 @@ enum CostEstimator {
             return unknownModelPricing
         }
 
-        return pricingLookup[model.lowercased()] ?? unknownModelPricing
+        let key = model.lowercased()
+        if let direct = pricingLookup[key] {
+            return direct
+        }
+        if let aliased = modelAliases[key], let viaAlias = pricingLookup[aliased] {
+            return viaAlias
+        }
+        return unknownModelPricing
     }
 
     // MARK: - Formatting
@@ -377,7 +433,7 @@ enum CostEstimator {
         cachedWriteTokens: Int,
         reasoningTokens: Int,
         model: String?,
-        pricingTable: [ModelPricing] = defaultPricingTable
+        pricingTable: [ModelPricing] = configuredPricingTable
     ) -> Double {
         let pricingLookup = pricingLookup(from: pricingTable)
         let normalizedModel = canonicalModelName(model, pricingLookup: pricingLookup)
@@ -391,6 +447,42 @@ enum CostEstimator {
             * (pricing.cacheReadPricePerMillion ?? pricing.inputPricePerMillion * cachedReadMultiplier)
             / 1_000_000.0
         let inputCost = uncachedAndWriteInputCost + cachedReadInputCost
+
+        let outputCost = Double(completionTokens + reasoningTokens)
+            * pricing.outputPricePerMillion / 1_000_000.0
+
+        return inputCost + outputCost
+    }
+
+    static func estimateCacheModeledCost(
+        promptTokens: Int,
+        newInputTokens: Int,
+        completionTokens: Int,
+        cachedReadTokens: Int,
+        cachedWriteTokens: Int,
+        reasoningTokens: Int,
+        model: String?,
+        pricingTable: [ModelPricing] = configuredPricingTable
+    ) -> Double {
+        let pricingLookup = pricingLookup(from: pricingTable)
+        let normalizedModel = canonicalModelName(model, pricingLookup: pricingLookup)
+        let pricing = pricing(for: normalizedModel, pricingLookup: pricingLookup)
+        let cacheReadRate = pricing.cacheReadPricePerMillion ?? pricing.inputPricePerMillion * cachedReadMultiplier
+
+        let inputCost: Double
+        if cachedReadTokens + cachedWriteTokens > 0 {
+            let uncached = max(0, promptTokens - cachedReadTokens - cachedWriteTokens)
+            inputCost = (Double(uncached) * uncachedMultiplier + Double(cachedWriteTokens) * cachedWriteMultiplier)
+                * pricing.inputPricePerMillion / 1_000_000.0
+                + Double(cachedReadTokens) * cacheReadRate / 1_000_000.0
+        } else {
+            // No provider cache split recorded: treat the re-sent prefix (prompt - new) as a
+            // cache hit at the read rate; only genuinely new input pays the full input rate.
+            let newInput = max(0, min(newInputTokens, promptTokens))
+            let resent = promptTokens - newInput
+            inputCost = Double(newInput) * pricing.inputPricePerMillion / 1_000_000.0
+                + Double(resent) * cacheReadRate / 1_000_000.0
+        }
 
         let outputCost = Double(completionTokens + reasoningTokens)
             * pricing.outputPricePerMillion / 1_000_000.0

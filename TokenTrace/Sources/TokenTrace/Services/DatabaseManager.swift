@@ -1,7 +1,9 @@
 import Foundation
 import GRDB
 
-final class DatabaseManager {
+// @unchecked Sendable: dbPool is write-once in setup() and DatabasePool is itself
+// thread-safe Sendable; dbPath is immutable. Do not add mutable stored state.
+final class DatabaseManager: @unchecked Sendable {
     static let shared = DatabaseManager()
 
     private(set) var dbPool: DatabasePool!
@@ -108,28 +110,126 @@ final class DatabaseManager {
             try db.execute(sql: "DELETE FROM source_cursors WHERE source = 'roo'")
         }
 
+        // v9: adds newInputTokens (reset-aware positive delta of promptTokens within a
+        // session = unique-work basis; promptTokens stays the full re-sent context =
+        // cost basis), backfills it, and re-ingests codex for the reasoning keystone fix.
+        migrator.registerMigration("v9-unique-work") { db in
+            try db.alter(table: "usage_events") { t in
+                t.add(column: "newInputTokens", .integer).notNull().defaults(to: 0)
+            }
+
+            try db.create(table: "session_input_state") { t in
+                t.column("source", .text).notNull()
+                t.column("sessionID", .text).notNull()
+                t.column("lastPromptTokens", .integer).notNull().defaults(to: 0)
+                t.column("lastObservedAt", .datetime)
+                t.primaryKey(["source", "sessionID"])
+            }
+
+            // Reset-aware delta: first turn in a session, or any turn where promptTokens
+            // dropped below the previous (context compaction / sub-conversation reset),
+            // counts full promptTokens; otherwise the positive delta. Window functions
+            // require SQLite 3.25+ (macOS 14+).
+            try db.execute(sql: """
+                WITH ordered AS (
+                    SELECT id,
+                           promptTokens AS p,
+                           LAG(promptTokens) OVER (
+                               PARTITION BY source, sessionID
+                               ORDER BY observedAt, id
+                           ) AS prev
+                    FROM usage_events
+                    WHERE source IN ('opencode', 'openclaw') AND sessionID IS NOT NULL
+                )
+                UPDATE usage_events
+                SET newInputTokens = (
+                    SELECT CASE
+                               WHEN o.prev IS NULL OR o.p < o.prev THEN o.p
+                               ELSE o.p - o.prev
+                           END
+                    FROM ordered o
+                    WHERE o.id = usage_events.id
+                )
+                WHERE id IN (SELECT id FROM ordered)
+                """)
+
+            // Session-less rows (continue) each stand alone: all input is new.
+            try db.execute(sql: """
+                UPDATE usage_events
+                SET newInputTokens = promptTokens
+                WHERE sessionID IS NULL
+                """)
+
+            // Re-ingest codex from on-disk rollout JSONL so the reasoning keystone fix
+            // applies; clearing the cursor forces a full re-scan on next collect.
+            try db.execute(sql: "DELETE FROM usage_events WHERE source = 'codex'")
+            try db.execute(sql: "DELETE FROM source_cursors WHERE source = 'codex'")
+
+            // Seed the live delta cursor from the latest promptTokens per session so the
+            // next turn deltas against the true last value instead of restarting at zero.
+            try db.execute(sql: """
+                INSERT INTO session_input_state (source, sessionID, lastPromptTokens, lastObservedAt)
+                SELECT e.source, e.sessionID, e.promptTokens, e.observedAt
+                FROM usage_events e
+                JOIN (
+                    SELECT source, sessionID, MAX(observedAt) AS maxObservedAt
+                    FROM usage_events
+                    WHERE sessionID IS NOT NULL
+                    GROUP BY source, sessionID
+                ) latest
+                  ON e.source = latest.source
+                 AND e.sessionID = latest.sessionID
+                 AND e.observedAt = latest.maxObservedAt
+                """)
+        }
+
         return migrator
     }
 
     // MARK: - Insert
 
-    func insertEvents(_ events: [UsageEvent]) throws {
-        try dbPool.write { db in
+    func insertEvents(_ events: [UsageEvent]) async throws {
+        try await dbPool.write { db in
             for event in events {
+                var event = event
+                event.newInputTokens = try Self.computeNewInputTokens(for: event, in: db)
                 try event.save(db)
+                if let sessionID = event.sessionID {
+                    try db.execute(sql: """
+                        INSERT INTO session_input_state (source, sessionID, lastPromptTokens, lastObservedAt)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(source, sessionID) DO UPDATE SET
+                            lastPromptTokens = excluded.lastPromptTokens,
+                            lastObservedAt = excluded.lastObservedAt
+                        """, arguments: [event.source.rawValue, sessionID, event.promptTokens, event.observedAt])
+                }
             }
         }
     }
 
+    // Reset-aware positive delta of promptTokens within a (source, sessionID): a turn
+    // whose prompt dropped below the last seen value (context compaction) or that opens
+    // a session counts its full prompt as new; otherwise only the growth is new. Mirrors
+    // the v9 backfill so live inserts and historical rows use identical math.
+    private static func computeNewInputTokens(for event: UsageEvent, in db: Database) throws -> Int {
+        guard let sessionID = event.sessionID else { return event.promptTokens }
+        let previous: Int? = try Row.fetchOne(db, sql: """
+            SELECT lastPromptTokens FROM session_input_state WHERE source = ? AND sessionID = ?
+            """, arguments: [event.source.rawValue, sessionID])?["lastPromptTokens"]
+        guard let prev = previous, event.promptTokens >= prev else { return event.promptTokens }
+        return event.promptTokens - prev
+    }
+
     // MARK: - Queries
 
-    func todaySummary() throws -> (total: Int, prompt: Int, completion: Int, cached: Int, reasoning: Int, cachedRead: Int, cachedWrite: Int, estimatedCost: Double, bySource: [UsageEvent.Source: Int]) {
+    func todaySummary() async throws -> (total: Int, prompt: Int, newInput: Int, completion: Int, cached: Int, reasoning: Int, cachedRead: Int, cachedWrite: Int, estimatedCost: Double, bySource: [UsageEvent.Source: Int]) {
         let startOfDay = Calendar.current.startOfDay(for: Date())
-        return try dbPool.read { db in
+        return try await dbPool.read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT source,
                        COALESCE(SUM(totalTokens), 0) as total,
                        COALESCE(SUM(promptTokens), 0) as prompt,
+                       COALESCE(SUM(newInputTokens), 0) as newInput,
                        COALESCE(SUM(completionTokens), 0) as completion,
                        COALESCE(SUM(cachedReadTokens), 0) as cachedRead,
                        COALESCE(SUM(cachedWriteTokens), 0) as cachedWrite,
@@ -140,7 +240,7 @@ final class DatabaseManager {
                 GROUP BY source
                 """, arguments: [startOfDay])
 
-            var totalAll = 0, promptAll = 0, completionAll = 0, cachedAll = 0, reasoningAll = 0
+            var totalAll = 0, promptAll = 0, newInputAll = 0, completionAll = 0, cachedAll = 0, reasoningAll = 0
             var cachedReadAll = 0, cachedWriteAll = 0, costAll = 0.0
             var bySource: [UsageEvent.Source: Int] = [:]
 
@@ -149,6 +249,7 @@ final class DatabaseManager {
                 let total: Int = row["total"]
                 totalAll += total
                 promptAll += row["prompt"]
+                newInputAll += row["newInput"] as Int
                 completionAll += row["completion"]
                 cachedAll += row["cached"]
                 reasoningAll += row["reasoning"]
@@ -158,16 +259,17 @@ final class DatabaseManager {
                 bySource[source] = total
             }
 
-            return (totalAll, promptAll, completionAll, cachedAll, reasoningAll, cachedReadAll, cachedWriteAll, costAll, bySource)
+            return (totalAll, promptAll, newInputAll, completionAll, cachedAll, reasoningAll, cachedReadAll, cachedWriteAll, costAll, bySource)
         }
     }
 
-    func recentSessions(limit: Int = 10) throws -> [SessionSummary] {
-        return try dbPool.read { db in
+    func recentSessions(limit: Int = 10) async throws -> [SessionSummary] {
+        return try await dbPool.read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT e.sessionID, e.source, e.projectName, e.model, e.agent, e.sessionTitle,
                        COALESCE(SUM(e.totalTokens), 0) as totalTokens,
                        COALESCE(SUM(e.promptTokens), 0) as promptTokens,
+                       COALESCE(SUM(e.newInputTokens), 0) as newInputTokens,
                        COALESCE(SUM(e.completionTokens), 0) as completionTokens,
                        COALESCE(SUM(e.cachedReadTokens) + SUM(e.cachedWriteTokens), 0) as cachedTokens,
                        COALESCE(SUM(e.reasoningTokens), 0) as reasoningTokens,
@@ -194,6 +296,7 @@ final class DatabaseManager {
                     agent: row["agent"],
                     totalTokens: row["totalTokens"],
                     promptTokens: row["promptTokens"],
+                    newInputTokens: row["newInputTokens"],
                     completionTokens: row["completionTokens"],
                     cachedTokens: row["cachedTokens"],
                     reasoningTokens: row["reasoningTokens"],
@@ -211,12 +314,13 @@ final class DatabaseManager {
 
     // MARK: - Daily History
 
-    func dailySummaries(days: Int = 14) throws -> [DailySummary] {
-        return try dbPool.read { db in
+    func dailySummaries(days: Int = 14) async throws -> [DailySummary] {
+        return try await dbPool.read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT date(observedAt) as day,
                        COALESCE(SUM(totalTokens), 0) as total,
                        COALESCE(SUM(promptTokens), 0) as prompt,
+                       COALESCE(SUM(newInputTokens), 0) as newInput,
                        COALESCE(SUM(completionTokens), 0) as completion,
                        COALESCE(SUM(cachedReadTokens) + SUM(cachedWriteTokens), 0) as cached,
                        COALESCE(SUM(reasoningTokens), 0) as reasoning,
@@ -239,6 +343,7 @@ final class DatabaseManager {
                     date: date,
                     totalTokens: row["total"],
                     promptTokens: row["prompt"],
+                    newInputTokens: row["newInput"],
                     completionTokens: row["completion"],
                     cachedTokens: row["cached"],
                     reasoningTokens: row["reasoning"],
@@ -251,12 +356,12 @@ final class DatabaseManager {
         }
     }
 
-    func sourceTotalsForDate(_ date: Date) throws -> [UsageEvent.Source: Int] {
+    func sourceTotalsForDate(_ date: Date) async throws -> [UsageEvent.Source: Int] {
         let calendar = Calendar.current
         let startOfDay = calendar.startOfDay(for: date)
         let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay)!
 
-        return try dbPool.read { db in
+        return try await dbPool.read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT source, COALESCE(SUM(totalTokens), 0) as total
                 FROM usage_events
@@ -274,16 +379,17 @@ final class DatabaseManager {
         }
     }
 
-    func sessionsForDate(_ date: Date) throws -> [SessionSummary] {
+    func sessionsForDate(_ date: Date) async throws -> [SessionSummary] {
         let calendar = Calendar.current
         let startOfDay = calendar.startOfDay(for: date)
         let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay)!
 
-        return try dbPool.read { db in
+        return try await dbPool.read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT e.sessionID, e.source, e.projectName, e.model, e.agent, e.sessionTitle,
                        COALESCE(SUM(e.totalTokens), 0) as totalTokens,
                        COALESCE(SUM(e.promptTokens), 0) as promptTokens,
+                       COALESCE(SUM(e.newInputTokens), 0) as newInputTokens,
                        COALESCE(SUM(e.completionTokens), 0) as completionTokens,
                        COALESCE(SUM(e.cachedReadTokens) + SUM(e.cachedWriteTokens), 0) as cachedTokens,
                        COALESCE(SUM(e.reasoningTokens), 0) as reasoningTokens,
@@ -312,6 +418,7 @@ final class DatabaseManager {
                     agent: row["agent"],
                     totalTokens: row["totalTokens"],
                     promptTokens: row["promptTokens"],
+                    newInputTokens: row["newInputTokens"],
                     completionTokens: row["completionTokens"],
                     cachedTokens: row["cachedTokens"],
                     reasoningTokens: row["reasoningTokens"],
@@ -329,8 +436,8 @@ final class DatabaseManager {
 
     // MARK: - Chart Data
 
-    func chartData(range: ChartRange) throws -> [ChartDataPoint] {
-        return try dbPool.read { db in
+    func chartData(range: ChartRange) async throws -> [ChartDataPoint] {
+        return try await dbPool.read { db in
             // observedAt is UTC; bucket in localtime so Swift Charts (which re-bins
             // BarMark via local Calendar.current) agrees. Anchoring the X position to
             // MIN(observedAt) instead let an event like 2026-04-01 00:23 UTC fall into
@@ -358,6 +465,7 @@ final class DatabaseManager {
                 SELECT \(periodExpr) as period,
                        COALESCE(SUM(totalTokens), 0) as total,
                        COALESCE(SUM(promptTokens), 0) as prompt,
+                       COALESCE(SUM(newInputTokens), 0) as newInput,
                        COALESCE(SUM(completionTokens), 0) as completion
                 FROM usage_events
                 \(whereClause)
@@ -379,6 +487,7 @@ final class DatabaseManager {
                     date: date,
                     totalTokens: row["total"],
                     promptTokens: row["prompt"],
+                    newInputTokens: row["newInput"],
                     completionTokens: row["completion"],
                     label: periodKey
                 )
@@ -386,8 +495,8 @@ final class DatabaseManager {
         }
     }
 
-    func rangeSummary(range: ChartRange) throws -> (total: Int, prompt: Int, completion: Int, cached: Int, reasoning: Int, cachedRead: Int, cachedWrite: Int, estimatedCost: Double) {
-        return try dbPool.read { db in
+    func rangeSummary(range: ChartRange) async throws -> (total: Int, prompt: Int, newInput: Int, completion: Int, cached: Int, reasoning: Int, cachedRead: Int, cachedWrite: Int, estimatedCost: Double) {
+        return try await dbPool.read { db in
             let whereClause: String
             if let days = range.days {
                 whereClause = "WHERE observedAt >= date('now', '-\(days) days')"
@@ -398,6 +507,7 @@ final class DatabaseManager {
             let row = try Row.fetchOne(db, sql: """
                 SELECT COALESCE(SUM(totalTokens), 0) as total,
                        COALESCE(SUM(promptTokens), 0) as prompt,
+                       COALESCE(SUM(newInputTokens), 0) as newInput,
                        COALESCE(SUM(completionTokens), 0) as completion,
                        COALESCE(SUM(cachedReadTokens) + SUM(cachedWriteTokens), 0) as cached,
                        COALESCE(SUM(reasoningTokens), 0) as reasoning,
@@ -408,103 +518,25 @@ final class DatabaseManager {
                 \(whereClause)
                 """)
 
-            guard let row = row else { return (0, 0, 0, 0, 0, 0, 0, 0.0) }
-            return (row["total"], row["prompt"], row["completion"], row["cached"], row["reasoning"], row["cachedRead"], row["cachedWrite"], row["cost"])
+            guard let row = row else { return (0, 0, 0, 0, 0, 0, 0, 0, 0.0) }
+            return (row["total"], row["prompt"], row["newInput"], row["completion"], row["cached"], row["reasoning"], row["cachedRead"], row["cachedWrite"], row["cost"])
         }
     }
 
     // MARK: - Cursor Management
 
-    func getCursor(for source: UsageEvent.Source) throws -> String? {
-        return try dbPool.read { db in
+    func getCursor(for source: UsageEvent.Source) async throws -> String? {
+        return try await dbPool.read { db in
             try Row.fetchOne(db, sql: "SELECT lastCursor FROM source_cursors WHERE source = ?", arguments: [source.rawValue])?["lastCursor"]
         }
     }
 
-    func setCursor(for source: UsageEvent.Source, cursor: String) throws {
-        try dbPool.write { db in
+    func setCursor(for source: UsageEvent.Source, cursor: String) async throws {
+        try await dbPool.write { db in
             try db.execute(sql: """
                 INSERT INTO source_cursors (source, lastCursor, lastScanAt) VALUES (?, ?, ?)
                 ON CONFLICT(source) DO UPDATE SET lastCursor = excluded.lastCursor, lastScanAt = excluded.lastScanAt
                 """, arguments: [source.rawValue, cursor, Date()])
-        }
-    }
-}
-
-extension DatabaseManager: RooTaskSnapshotStore {
-    func snapshots(for taskIDs: [String]) throws -> [String: RooTaskSnapshot] {
-        guard !taskIDs.isEmpty else { return [:] }
-
-        let placeholders = Array(repeating: "?", count: taskIDs.count).joined(separator: ", ")
-        let arguments = StatementArguments(taskIDs)
-
-        return try dbPool.read { db in
-            let rows = try Row.fetchAll(
-                db,
-                sql: """
-                    SELECT taskID, lastTokensIn, lastTokensOut, lastCacheWrites, lastCacheReads,
-                           lastCost, lastTs, lastStatus, firstSeenAt
-                    FROM roo_task_snapshot
-                    WHERE taskID IN (
-                        \(placeholders)
-                    )
-                    """,
-                arguments: arguments
-            )
-
-            var snapshotsByTaskID: [String: RooTaskSnapshot] = [:]
-            for row in rows {
-                let snapshot = RooTaskSnapshot(
-                    taskID: row["taskID"],
-                    tokensIn: row["lastTokensIn"],
-                    tokensOut: row["lastTokensOut"],
-                    cacheWrites: row["lastCacheWrites"],
-                    cacheReads: row["lastCacheReads"],
-                    totalCost: row["lastCost"],
-                    lastTimestamp: row["lastTs"],
-                    status: row["lastStatus"],
-                    firstSeenAt: row["firstSeenAt"]
-                )
-                snapshotsByTaskID[snapshot.taskID] = snapshot
-            }
-            return snapshotsByTaskID
-        }
-    }
-
-    func saveSnapshots(_ snapshots: [RooTaskSnapshot]) throws {
-        guard !snapshots.isEmpty else { return }
-
-        try dbPool.write { db in
-            for snapshot in snapshots {
-                try db.execute(
-                    sql: """
-                        INSERT INTO roo_task_snapshot (
-                            taskID, lastTokensIn, lastTokensOut, lastCacheWrites,
-                            lastCacheReads, lastCost, lastTs, lastStatus, firstSeenAt
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(taskID) DO UPDATE SET
-                            lastTokensIn = excluded.lastTokensIn,
-                            lastTokensOut = excluded.lastTokensOut,
-                            lastCacheWrites = excluded.lastCacheWrites,
-                            lastCacheReads = excluded.lastCacheReads,
-                            lastCost = excluded.lastCost,
-                            lastTs = excluded.lastTs,
-                            lastStatus = excluded.lastStatus,
-                            firstSeenAt = excluded.firstSeenAt
-                        """,
-                    arguments: [
-                        snapshot.taskID,
-                        snapshot.tokensIn,
-                        snapshot.tokensOut,
-                        snapshot.cacheWrites,
-                        snapshot.cacheReads,
-                        snapshot.totalCost,
-                        snapshot.lastTimestamp,
-                        snapshot.status,
-                        snapshot.firstSeenAt,
-                    ]
-                )
-            }
         }
     }
 }

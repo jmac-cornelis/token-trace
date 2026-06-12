@@ -67,9 +67,10 @@ struct UsageChartView: View {
     private var rangeSummary: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 12) {
-                Text(UsageStore.formatTokens(usageStore.rangeTotalTokens))
+                Text(UsageStore.formatTokens(usageStore.rangeUniqueWork))
                     .font(.system(size: 16, weight: .semibold, design: .rounded))
                     .monospacedDigit()
+                    .help("Unique work over this range: new input + output + reasoning, excluding re-sent context. Provider total: \(UsageStore.formatTokens(usageStore.rangeTotalTokens)).")
                 HStack(spacing: 4) {
                     Text("In")
                         .font(.caption2)
@@ -128,7 +129,7 @@ struct UsageChartView: View {
         Chart(usageStore.chartData) { point in
             BarMark(
                 x: .value("Date", point.date, unit: chartUnit),
-                y: .value("Tokens", point.totalTokens)
+                y: .value("Tokens", point.uniqueWork)
             )
             .foregroundStyle(Color.blue.opacity(0.6))
             .cornerRadius(2)

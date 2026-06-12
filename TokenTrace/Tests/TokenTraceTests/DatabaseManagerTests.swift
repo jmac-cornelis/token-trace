@@ -15,26 +15,26 @@ struct DatabaseManagerTests {
         return (db, tempDir)
     }
 
-    @Test func insertAndTodaySummary() throws {
+    @Test func insertAndTodaySummary() async throws {
         let (db, tempDir) = try makeDB()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let events = [
             makeEvent(source: .opencode, prompt: 100, completion: 50, total: 150),
             makeEvent(source: .opencode, prompt: 200, completion: 100, total: 300),
-            makeEvent(source: .roo, prompt: 50, completion: 25, total: 75),
+            makeEvent(source: .openclaw, prompt: 50, completion: 25, total: 75),
         ]
-        try db.insertEvents(events)
+        try await db.insertEvents(events)
 
-        let summary = try db.todaySummary()
+        let summary = try await db.todaySummary()
         #expect(summary.total == 525)
         #expect(summary.prompt == 350)
         #expect(summary.completion == 175)
         #expect(summary.bySource[.opencode] == 450)
-        #expect(summary.bySource[.roo] == 75)
+        #expect(summary.bySource[.openclaw] == 75)
     }
 
-    @Test func todaySummaryExcludesYesterday() throws {
+    @Test func todaySummaryExcludesYesterday() async throws {
         let (db, tempDir) = try makeDB()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -43,34 +43,34 @@ struct DatabaseManagerTests {
             makeEvent(source: .opencode, prompt: 100, completion: 50, total: 150),
             makeEvent(source: .opencode, prompt: 999, completion: 999, total: 1998, date: yesterday),
         ]
-        try db.insertEvents(events)
+        try await db.insertEvents(events)
 
-        let summary = try db.todaySummary()
+        let summary = try await db.todaySummary()
         #expect(summary.total == 150)
     }
 
-    @Test func emptyDatabaseReturnsZeros() throws {
+    @Test func emptyDatabaseReturnsZeros() async throws {
         let (db, tempDir) = try makeDB()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let summary = try db.todaySummary()
+        let summary = try await db.todaySummary()
         #expect(summary.total == 0)
         #expect(summary.prompt == 0)
         #expect(summary.completion == 0)
     }
 
-    @Test func recentSessionsGroupsBySessionID() throws {
+    @Test func recentSessionsGroupsBySessionID() async throws {
         let (db, tempDir) = try makeDB()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let events = [
             makeEvent(source: .opencode, prompt: 100, completion: 50, total: 150, sessionID: "ses_1", project: "proj-a"),
             makeEvent(source: .opencode, prompt: 200, completion: 100, total: 300, sessionID: "ses_1", project: "proj-a"),
-            makeEvent(source: .roo, prompt: 50, completion: 25, total: 75, sessionID: "task_2", project: "proj-b"),
+            makeEvent(source: .openclaw, prompt: 50, completion: 25, total: 75, sessionID: "task_2", project: "proj-b"),
         ]
-        try db.insertEvents(events)
+        try await db.insertEvents(events)
 
-        let sessions = try db.recentSessions(limit: 10)
+        let sessions = try await db.recentSessions(limit: 10)
         #expect(sessions.count == 2)
 
         let ses1 = sessions.first { $0.id == "ses_1" }
@@ -80,18 +80,18 @@ struct DatabaseManagerTests {
         #expect(ses1?.source == .opencode)
     }
 
-    @Test func recentSessionsRespectsLimit() throws {
+    @Test func recentSessionsRespectsLimit() async throws {
         let (db, tempDir) = try makeDB()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         for i in 0..<20 {
-            try db.insertEvents([makeEvent(source: .opencode, total: 100, sessionID: "ses_\(i)")])
+            try await db.insertEvents([makeEvent(source: .opencode, total: 100, sessionID: "ses_\(i)")])
         }
-        let sessions = try db.recentSessions(limit: 5)
+        let sessions = try await db.recentSessions(limit: 5)
         #expect(sessions.count == 5)
     }
 
-    @Test func dailySummariesGroupsByDate() throws {
+    @Test func dailySummariesGroupsByDate() async throws {
         let (db, tempDir) = try makeDB()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -100,11 +100,11 @@ struct DatabaseManagerTests {
         let events = [
             makeEvent(source: .opencode, total: 100, date: today),
             makeEvent(source: .opencode, total: 200, date: today),
-            makeEvent(source: .roo, total: 300, date: yesterday),
+            makeEvent(source: .openclaw, total: 300, date: yesterday),
         ]
-        try db.insertEvents(events)
+        try await db.insertEvents(events)
 
-        let summaries = try db.dailySummaries(days: 7)
+        let summaries = try await db.dailySummaries(days: 7)
         #expect(summaries.count == 2)
 
         let todaySummary = summaries.first { $0.isToday }
@@ -112,7 +112,7 @@ struct DatabaseManagerTests {
         #expect(todaySummary?.totalTokens == 300)
     }
 
-    @Test func sessionsForDateFiltersCorrectly() throws {
+    @Test func sessionsForDateFiltersCorrectly() async throws {
         let (db, tempDir) = try makeDB()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -122,18 +122,18 @@ struct DatabaseManagerTests {
             makeEvent(source: .opencode, total: 100, sessionID: "ses_today", date: today),
             makeEvent(source: .opencode, total: 200, sessionID: "ses_yesterday", date: yesterday),
         ]
-        try db.insertEvents(events)
+        try await db.insertEvents(events)
 
-        let todaySessions = try db.sessionsForDate(today)
+        let todaySessions = try await db.sessionsForDate(today)
         #expect(todaySessions.count == 1)
         #expect(todaySessions.first?.id == "ses_today")
 
-        let yesterdaySessions = try db.sessionsForDate(yesterday)
+        let yesterdaySessions = try await db.sessionsForDate(yesterday)
         #expect(yesterdaySessions.count == 1)
         #expect(yesterdaySessions.first?.id == "ses_yesterday")
     }
 
-    @Test func chartDataWeekRange() throws {
+    @Test func chartDataWeekRange() async throws {
         let (db, tempDir) = try makeDB()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -141,97 +141,161 @@ struct DatabaseManagerTests {
         let threeDaysAgo = Calendar.current.date(byAdding: .day, value: -3, to: today)!
         let events = [
             makeEvent(source: .opencode, prompt: 100, completion: 50, total: 150, date: today),
-            makeEvent(source: .roo, prompt: 200, completion: 100, total: 300, date: threeDaysAgo),
+            makeEvent(source: .openclaw, prompt: 200, completion: 100, total: 300, date: threeDaysAgo),
         ]
-        try db.insertEvents(events)
+        try await db.insertEvents(events)
 
-        let data = try db.chartData(range: .week)
+        let data = try await db.chartData(range: .week)
         #expect(data.count >= 2)
 
         let totalAcrossPoints = data.reduce(0) { $0 + $1.totalTokens }
         #expect(totalAcrossPoints == 450)
     }
 
-    @Test func chartDataTotalRange() throws {
+    @Test func chartDataTotalRange() async throws {
         let (db, tempDir) = try makeDB()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        try db.insertEvents([makeEvent(source: .opencode, total: 500)])
-        let data = try db.chartData(range: .total)
+        try await db.insertEvents([makeEvent(source: .opencode, total: 500)])
+        let data = try await db.chartData(range: .total)
         #expect(!data.isEmpty)
     }
 
-    @Test func rangeSummary() throws {
+    @Test func rangeSummary() async throws {
         let (db, tempDir) = try makeDB()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let events = [
             makeEvent(source: .opencode, prompt: 100, completion: 50, total: 150),
-            makeEvent(source: .roo, prompt: 200, completion: 100, total: 300),
+            makeEvent(source: .openclaw, prompt: 200, completion: 100, total: 300),
         ]
-        try db.insertEvents(events)
+        try await db.insertEvents(events)
 
-        let summary = try db.rangeSummary(range: .week)
+        let summary = try await db.rangeSummary(range: .week)
         #expect(summary.total == 450)
         #expect(summary.prompt == 300)
         #expect(summary.completion == 150)
     }
 
-    @Test func rangeSummaryTotalIncludesAllData() throws {
+    @Test func rangeSummaryTotalIncludesAllData() async throws {
         let (db, tempDir) = try makeDB()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let longAgo = Calendar.current.date(byAdding: .year, value: -2, to: Date())!
-        try db.insertEvents([
+        try await db.insertEvents([
             makeEvent(source: .opencode, total: 100),
             makeEvent(source: .opencode, total: 200, date: longAgo),
         ])
 
-        let weekSummary = try db.rangeSummary(range: .week)
+        let weekSummary = try await db.rangeSummary(range: .week)
         #expect(weekSummary.total == 100)
 
-        let totalSummary = try db.rangeSummary(range: .total)
+        let totalSummary = try await db.rangeSummary(range: .total)
         #expect(totalSummary.total == 300)
     }
 
-    @Test func cursorRoundTrip() throws {
+    @Test func cursorRoundTrip() async throws {
         let (db, tempDir) = try makeDB()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        #expect(try db.getCursor(for: .opencode) == nil)
+        #expect(try await db.getCursor(for: .opencode) == nil)
 
-        try db.setCursor(for: .opencode, cursor: "12345")
-        #expect(try db.getCursor(for: .opencode) == "12345")
+        try await db.setCursor(for: .opencode, cursor: "12345")
+        #expect(try await db.getCursor(for: .opencode) == "12345")
 
-        try db.setCursor(for: .opencode, cursor: "67890")
-        #expect(try db.getCursor(for: .opencode) == "67890")
+        try await db.setCursor(for: .opencode, cursor: "67890")
+        #expect(try await db.getCursor(for: .opencode) == "67890")
     }
 
-    @Test func cursorsArePerSource() throws {
+    @Test func cursorsArePerSource() async throws {
         let (db, tempDir) = try makeDB()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        try db.setCursor(for: .opencode, cursor: "aaa")
-        try db.setCursor(for: .roo, cursor: "bbb")
-        try db.setCursor(for: .codex, cursor: "ccc")
+        try await db.setCursor(for: .opencode, cursor: "aaa")
+        try await db.setCursor(for: .openclaw, cursor: "bbb")
+        try await db.setCursor(for: .codex, cursor: "ccc")
 
-        #expect(try db.getCursor(for: .opencode) == "aaa")
-        #expect(try db.getCursor(for: .roo) == "bbb")
-        #expect(try db.getCursor(for: .codex) == "ccc")
+        #expect(try await db.getCursor(for: .opencode) == "aaa")
+        #expect(try await db.getCursor(for: .openclaw) == "bbb")
+        #expect(try await db.getCursor(for: .codex) == "ccc")
     }
 
-    @Test func codexSourceInSummary() throws {
+    @Test func codexSourceInSummary() async throws {
         let (db, tempDir) = try makeDB()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        try db.insertEvents([makeEvent(source: .codex, prompt: 0, completion: 500, total: 500)])
+        try await db.insertEvents([makeEvent(source: .codex, prompt: 0, completion: 500, total: 500)])
 
-        let summary = try db.todaySummary()
+        let summary = try await db.todaySummary()
         #expect(summary.bySource[.codex] == 500)
         #expect(summary.total == 500)
     }
 
-    @Test func rooMigrationClearsLegacyRowsAndCursor() throws {
+    @Test func newInputTokensStripsResentContextWithinSession() async throws {
+        let (db, tempDir) = try makeDB()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let base = Date()
+        func at(_ offset: TimeInterval) -> Date { base.addingTimeInterval(offset) }
+
+        // OpenCode reports promptTokens as the full re-sent context each turn, so it grows
+        // monotonically; a drop signals a context reset (compaction/sub-conversation), where
+        // the whole prompt is genuinely new again.
+        try await db.insertEvents([
+            makeEvent(source: .opencode, prompt: 1_000, total: 1_000, sessionID: "ses_delta", date: at(0)),
+            makeEvent(source: .opencode, prompt: 1_500, total: 1_500, sessionID: "ses_delta", date: at(1)),
+            makeEvent(source: .opencode, prompt: 2_200, total: 2_200, sessionID: "ses_delta", date: at(2)),
+            makeEvent(source: .opencode, prompt: 800, total: 800, sessionID: "ses_delta", date: at(3)),
+        ])
+
+        let deltas = try await db.dbPool.read { db in
+            try Int.fetchAll(db, sql: """
+                SELECT newInputTokens FROM usage_events
+                WHERE sessionID = 'ses_delta' ORDER BY observedAt, id
+                """)
+        }
+        #expect(deltas == [1_000, 500, 700, 800])
+    }
+
+    @Test func newInputTokensEqualsPromptForSessionlessRows() async throws {
+        let (db, tempDir) = try makeDB()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await db.insertEvents([
+            makeEvent(source: .continue, prompt: 1_200, total: 1_200, sessionID: nil),
+            makeEvent(source: .continue, prompt: 900, total: 900, sessionID: nil),
+        ])
+
+        let deltas = try await db.dbPool.read { db in
+            try Int.fetchAll(db, sql: """
+                SELECT newInputTokens FROM usage_events WHERE source = 'continue' ORDER BY id
+                """)
+        }
+        #expect(deltas.sorted() == [900, 1_200])
+    }
+
+    @Test func newInputTokensIsolatesSessions() async throws {
+        let (db, tempDir) = try makeDB()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let base = Date()
+        try await db.insertEvents([
+            makeEvent(source: .opencode, prompt: 1_000, total: 1_000, sessionID: "ses_a", date: base.addingTimeInterval(0)),
+            makeEvent(source: .opencode, prompt: 5_000, total: 5_000, sessionID: "ses_b", date: base.addingTimeInterval(1)),
+            makeEvent(source: .opencode, prompt: 1_300, total: 1_300, sessionID: "ses_a", date: base.addingTimeInterval(2)),
+        ])
+
+        let aDeltas = try await db.dbPool.read { db in
+            try Int.fetchAll(db, sql: "SELECT newInputTokens FROM usage_events WHERE sessionID = 'ses_a' ORDER BY observedAt, id")
+        }
+        let bDeltas = try await db.dbPool.read { db in
+            try Int.fetchAll(db, sql: "SELECT newInputTokens FROM usage_events WHERE sessionID = 'ses_b' ORDER BY observedAt, id")
+        }
+        #expect(aDeltas == [1_000, 300])
+        #expect(bDeltas == [5_000])
+    }
+
+    @Test func legacyRooMigrationClearsRowsAndCursor() async throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -242,69 +306,18 @@ struct DatabaseManagerTests {
         let db = DatabaseManager(path: dbPath)
         try db.setup()
 
-        let summary = try db.todaySummary()
-        #expect(summary.bySource[.roo] == nil)
+        let summary = try await db.todaySummary()
         #expect(summary.bySource[.opencode] == 150)
         #expect(summary.total == 150)
-        #expect(try db.getCursor(for: .roo) == nil)
-    }
 
-    @Test func rooSnapshotStoreRoundTripsSnapshots() throws {
-        let (db, tempDir) = try makeDB()
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        let firstSeenAt = Date(timeIntervalSince1970: 1_700_000_000)
-        try db.saveSnapshots([
-            RooTaskSnapshot(
-                taskID: "task-1",
-                tokensIn: 120,
-                tokensOut: 80,
-                cacheWrites: 12,
-                cacheReads: 20,
-                totalCost: 1.75,
-                lastTimestamp: 1_700_000_500,
-                status: "active",
-                firstSeenAt: firstSeenAt
-            )
-        ])
-
-        let saved = try #require(db.snapshots(for: ["task-1"])["task-1"])
-        #expect(saved.tokensIn == 120)
-        #expect(saved.tokensOut == 80)
-        #expect(saved.cacheWrites == 12)
-        #expect(saved.cacheReads == 20)
-        #expect(saved.totalCost == 1.75)
-        #expect(saved.lastTimestamp == 1_700_000_500)
-        #expect(saved.status == "active")
-        #expect(saved.firstSeenAt == firstSeenAt)
-
-        try db.saveSnapshots([
-            RooTaskSnapshot(
-                taskID: "task-1",
-                tokensIn: 140,
-                tokensOut: 95,
-                cacheWrites: 14,
-                cacheReads: 25,
-                totalCost: 2.0,
-                lastTimestamp: 1_700_000_900,
-                status: "complete",
-                firstSeenAt: firstSeenAt
-            )
-        ])
-
-        let updated = try #require(db.snapshots(for: ["task-1"])["task-1"])
-        #expect(updated.tokensIn == 140)
-        #expect(updated.tokensOut == 95)
-        #expect(updated.cacheWrites == 14)
-        #expect(updated.cacheReads == 25)
-        #expect(updated.totalCost == 2.0)
-        #expect(updated.lastTimestamp == 1_700_000_900)
-        #expect(updated.status == "complete")
-        #expect(updated.firstSeenAt == firstSeenAt)
+        let rooRows = try await db.dbPool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM usage_events WHERE source = 'roo'") ?? 0
+        }
+        #expect(rooRows == 0)
     }
 
     @MainActor
-    @Test func usageStoreRefreshLoadsTodaysRooTotals() throws {
+    @Test func usageStoreRefreshLoadsTodaysTotals() async throws {
         let settings = SettingsManager.shared
         let previousMode = settings.dataSourceMode
         settings.dataSourceMode = .local
@@ -313,15 +326,15 @@ struct DatabaseManagerTests {
         let (db, tempDir) = try makeDB()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        try db.insertEvents([
-            makeEvent(source: .roo, prompt: 48_442, completion: 24_724, total: 73_166, date: Date()),
+        try await db.insertEvents([
+            makeEvent(source: .openclaw, prompt: 48_442, completion: 24_724, total: 73_166, date: Date()),
             makeEvent(source: .opencode, prompt: 100, completion: 50, total: 150, date: Date()),
         ])
 
         let store = UsageStore(db: db)
-        store.refresh()
+        await store.refreshNow()
 
-        #expect(store.rooCodeTokens == 73_166)
+        #expect(store.openclawTokens == 73_166)
         #expect(store.todayTotalTokens == 73_316)
         #expect(store.openCodeTokens == 150)
     }
@@ -418,12 +431,29 @@ struct DatabaseManagerTests {
         try migrator.migrate(dbQueue)
 
         try dbQueue.write { db in
-            try makeEvent(source: .roo, total: 75, sessionID: "roo-legacy", date: Date()).insert(db)
-            try makeEvent(source: .roo, total: 125, sessionID: "roo-current", date: Date()).insert(db)
-            try makeEvent(source: .opencode, total: 150, sessionID: "opencode-1", date: Date()).insert(db)
+            // 'roo' is no longer a valid UsageEvent.Source, so seed legacy rows via raw SQL
+            // to exercise the v7/v8 migration that purges them.
+            for (sessionID, total) in [("roo-legacy", 75), ("roo-current", 125)] {
+                try db.execute(
+                    sql: """
+                        INSERT INTO usage_events (id, observedAt, source, sessionID, totalTokens)
+                        VALUES (?, ?, 'roo', ?, ?)
+                        """,
+                    arguments: [UUID().uuidString, Date(), sessionID, total]
+                )
+            }
+            // Insert via raw SQL: the pre-migration schema (v1-v6) predates the v9
+            // newInputTokens column, so UsageEvent.insert (which emits that column) would fail.
+            try db.execute(
+                sql: """
+                    INSERT INTO usage_events (id, observedAt, source, sessionID, totalTokens)
+                    VALUES (?, ?, 'opencode', ?, ?)
+                    """,
+                arguments: [UUID().uuidString, Date(), "opencode-1", 150]
+            )
             try db.execute(
                 sql: "INSERT INTO source_cursors (source, lastCursor, lastScanAt) VALUES (?, ?, ?)",
-                arguments: [UsageEvent.Source.roo.rawValue, "{\"lastTimestamp\":123}", Date()]
+                arguments: ["roo", "{\"lastTimestamp\":123}", Date()]
             )
         }
     }

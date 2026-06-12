@@ -97,13 +97,25 @@ struct MenuBarDropdown: View {
                 .frame(height: 34)
             } else {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(UsageStore.formatTokens(usageStore.todayTotalTokens))
+                    Text(UsageStore.formatTokens(usageStore.todayUniqueWork))
                         .font(.system(size: 28, weight: .bold, design: .rounded))
                         .monospacedDigit()
-                    Text("tokens")
+                    Text("unique tokens")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
+                .help("Unique work = new input + output + reasoning. Excludes the growing conversation context that is re-sent on every turn.")
+
+                HStack(spacing: 4) {
+                    Text("Provider total")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Text(UsageStore.formatTokens(usageStore.todayTotalTokens))
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.tertiary)
+                }
+                .help("Total tokens the provider processed, counting re-sent context on every turn. This is the uncached billing basis, not a measure of unique work.")
 
                 HStack(spacing: 12) {
                     HStack(spacing: 4) {
@@ -123,38 +135,6 @@ struct MenuBarDropdown: View {
                             .font(.caption)
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
-                    }
-                }
-
-                if let billable = usageStore.todayBillableTokens {
-                    HStack(spacing: 12) {
-                        HStack(spacing: 4) {
-                            Text("Billable")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                            Text(UsageStore.formatTokens(Int(billable.totalBillableEquivalent.rounded())))
-                                .font(.caption)
-                                .fontWeight(.medium)
-                                .monospacedDigit()
-                                .foregroundStyle(.orange)
-                        }
-                        if billable.cacheSavingsPercent > 0 {
-                            Text("\(Int(billable.cacheSavingsPercent))% saved")
-                                .font(.caption2)
-                                .foregroundStyle(.green)
-                        }
-                        if usageStore.todayEstimatedCost > 0 {
-                            HStack(spacing: 4) {
-                                Text("≈")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                                Text(CostEstimator.formatCost(usageStore.todayEstimatedCost))
-                                    .font(.caption)
-                                    .fontWeight(.medium)
-                                    .monospacedDigit()
-                                    .foregroundStyle(.orange)
-                            }
-                        }
                     }
                 }
             }
@@ -190,12 +170,6 @@ struct MenuBarDropdown: View {
                     tokens: usageStore.openCodeTokens,
                     isHealthy: usageStore.openCodeHealthy,
                     icon: "terminal.fill"
-                )
-                sourceRow(
-                    name: "Roo Code",
-                    tokens: usageStore.rooCodeTokens,
-                    isHealthy: usageStore.rooCodeHealthy,
-                    icon: "hammer.fill"
                 )
                 sourceRow(
                     name: "Codex",
@@ -304,6 +278,8 @@ struct MenuBarDropdown: View {
             .buttonStyle(.plain)
 
             if showBreakdown {
+                breakdownRow(label: "Unique Work", value: usageStore.todayUniqueWork)
+                breakdownRow(label: "Provider Total", value: usageStore.todayTotalTokens)
                 breakdownRow(label: "Prompt", value: usageStore.todayPromptTokens)
                 breakdownRow(label: "Completion", value: usageStore.todayCompletionTokens)
                 breakdownRow(label: "Cached", value: usageStore.todayCachedTokens)
@@ -442,7 +418,7 @@ struct MenuBarDropdown: View {
 
                     Spacer()
 
-                    Text(UsageStore.formatTokens(session.totalTokens))
+                    Text(UsageStore.formatTokens(session.uniqueWork))
                         .font(.caption)
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
@@ -457,6 +433,8 @@ struct MenuBarDropdown: View {
 
             if isExpanded {
                 VStack(alignment: .leading, spacing: 3) {
+                    sessionDetailRow("Unique Work", session.uniqueWork)
+                    sessionDetailRow("Provider Total", session.totalTokens)
                     sessionDetailRow("Prompt", session.promptTokens)
                     sessionDetailRow("Completion", session.completionTokens)
                     if session.cachedTokens > 0 {
@@ -585,7 +563,7 @@ struct MenuBarDropdown: View {
                     Text("\(day.sessionCount)s")
                         .font(.caption2)
                         .foregroundStyle(.quaternary)
-                    Text(UsageStore.formatTokens(day.totalTokens))
+                    Text(UsageStore.formatTokens(day.uniqueWork))
                         .font(.caption)
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
@@ -695,7 +673,7 @@ struct MenuBarDropdown: View {
                                 .lineLimit(1)
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            Text(UsageStore.formatTokens(session.totalTokens))
+                            Text(UsageStore.formatTokens(session.uniqueWork))
                                 .font(.caption2)
                                 .monospacedDigit()
                                 .foregroundStyle(.tertiary)
@@ -711,7 +689,6 @@ struct MenuBarDropdown: View {
     private func sourceColor(_ source: UsageEvent.Source) -> Color {
         switch source {
         case .opencode: return .blue
-        case .roo: return .purple
         case .codex: return .green
         case .openclaw: return .orange
         case .continue: return .pink
@@ -721,7 +698,6 @@ struct MenuBarDropdown: View {
     private func sourceName(_ source: UsageEvent.Source) -> String {
         switch source {
         case .opencode: return "OC"
-        case .roo: return "Roo"
         case .codex: return "Cdx"
         case .openclaw: return "OClw"
         case .continue: return "Cont"

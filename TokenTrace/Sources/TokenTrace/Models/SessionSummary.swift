@@ -1,6 +1,6 @@
 import Foundation
 
-struct SessionSummary: Identifiable {
+struct SessionSummary: Identifiable, Sendable {
     let id: String
     let source: UsageEvent.Source
     let title: String?
@@ -9,6 +9,8 @@ struct SessionSummary: Identifiable {
     let agent: String?
     let totalTokens: Int
     let promptTokens: Int
+    // Per-turn input excluding the re-sent conversation prefix that promptTokens recounts each turn.
+    let newInputTokens: Int
     let completionTokens: Int
     let cachedTokens: Int
     let reasoningTokens: Int
@@ -19,6 +21,10 @@ struct SessionSummary: Identifiable {
     let firstSeen: Date
     let lastSeen: Date
     let lastPrompt: String?
+
+    var uniqueWork: Int {
+        newInputTokens + completionTokens + reasoningTokens
+    }
 
     var billableTokens: BillableTokens {
         CostEstimator.computeBillableTokens(
