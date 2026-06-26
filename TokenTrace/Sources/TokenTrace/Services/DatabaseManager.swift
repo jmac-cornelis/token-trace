@@ -314,6 +314,22 @@ final class DatabaseManager: @unchecked Sendable {
 
     // MARK: - Daily History
 
+    // Reused across all dailySummaries calls — DateFormatter is expensive to allocate.
+    private static let dailySummaryFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    // chartData parses period keys as local midnight; POSIX locale keeps parsing stable.
+    private static let chartDataFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.timeZone = Calendar.current.timeZone
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
     func dailySummaries(days: Int = 14) async throws -> [DailySummary] {
         return try await dbPool.read { db in
             let rows = try Row.fetchAll(db, sql: """
@@ -336,9 +352,7 @@ final class DatabaseManager: @unchecked Sendable {
 
             return rows.compactMap { row -> DailySummary? in
                 guard let dayString: String = row["day"] else { return nil }
-                let formatter = DateFormatter()
-                formatter.dateFormat = "yyyy-MM-dd"
-                guard let date = formatter.date(from: dayString) else { return nil }
+                guard let date = Self.dailySummaryFormatter.date(from: dayString) else { return nil }
                 return DailySummary(
                     date: date,
                     totalTokens: row["total"],
@@ -473,16 +487,9 @@ final class DatabaseManager: @unchecked Sendable {
                 ORDER BY period ASC
                 """)
 
-            // Parse the period key as LOCAL midnight so the plotted Date lands inside
-            // its bucket under Calendar.current. POSIX locale keeps parsing stable.
-            let formatter = DateFormatter()
-            formatter.dateFormat = "yyyy-MM-dd"
-            formatter.timeZone = Calendar.current.timeZone
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-
             return rows.compactMap { row -> ChartDataPoint? in
                 guard let periodKey: String = row["period"],
-                      let date = formatter.date(from: periodKey) else { return nil }
+                      let date = Self.chartDataFormatter.date(from: periodKey) else { return nil }
                 return ChartDataPoint(
                     date: date,
                     totalTokens: row["total"],
