@@ -176,19 +176,28 @@ final class ContinueReader {
 
     // MARK: - Private Helpers
 
+    // Static formatters: DateFormatter and ISO8601DateFormatter are expensive to allocate
+    // (~100 KB each). Creating them per-row inside a tight loop is the primary memory
+    // pressure source. Hoisting to static means they are allocated exactly once.
+    private static let sqliteFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
+    private static let iso8601Formatter = ISO8601DateFormatter()
+
     /// Continue stores `timestamp` as SQLite CURRENT_TIMESTAMP text ("yyyy-MM-dd HH:mm:ss",
     /// in UTC). Fall back to ISO-8601 in case a future Continue version changes the format.
     static func parseTimestamp(_ value: String?) -> Date? {
         guard let value, !value.isEmpty else { return nil }
 
-        let sqlite = DateFormatter()
-        sqlite.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        sqlite.timeZone = TimeZone(identifier: "UTC")
-        sqlite.locale = Locale(identifier: "en_US_POSIX")
-        if let date = sqlite.date(from: value) {
+        if let date = sqliteFormatter.date(from: value) {
             return date
         }
 
-        return ISO8601DateFormatter().date(from: value)
+        return iso8601Formatter.date(from: value)
     }
 }

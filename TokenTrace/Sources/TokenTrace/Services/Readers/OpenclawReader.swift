@@ -41,6 +41,12 @@ final class OpenclawReader {
         }
     }
 
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
     private struct CursorState: Codable {
         var processedFiles: [String: Int64]
     }
@@ -128,9 +134,7 @@ final class OpenclawReader {
             if let epochMs = message.timestamp {
                 timestamp = Date(timeIntervalSince1970: Double(epochMs) / 1000.0)
             } else if let isoString = entry.timestamp {
-                let formatter = ISO8601DateFormatter()
-                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                timestamp = formatter.date(from: isoString) ?? Date()
+                timestamp = Self.isoFormatter.date(from: isoString) ?? Date()
             } else {
                 timestamp = Date()
             }

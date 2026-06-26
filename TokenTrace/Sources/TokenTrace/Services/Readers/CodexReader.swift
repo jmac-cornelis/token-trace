@@ -197,6 +197,18 @@ final class CodexReader {
         let model: String?
     }
 
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let isoFallback: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
     private func parseRolloutEvents(rolloutPath: String?, threadId: String, startIndex: Int = 0) -> [RolloutEvent] {
         guard let path = resolveRolloutPath(rolloutPath, threadId: threadId) else {
             return []
@@ -210,12 +222,6 @@ final class CodexReader {
               let content = String(data: data, encoding: .utf8) else {
             return []
         }
-
-        let isoFormatter = ISO8601DateFormatter()
-        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-
-        let isoFallback = ISO8601DateFormatter()
-        isoFallback.formatOptions = [.withInternetDateTime]
 
         var results: [RolloutEvent] = []
         var prevCumulativeTotal = 0
@@ -261,8 +267,8 @@ final class CodexReader {
             }
 
             let timestampStr = json["timestamp"] as? String ?? ""
-            let timestamp = isoFormatter.date(from: timestampStr)
-                ?? isoFallback.date(from: timestampStr)
+            let timestamp = Self.isoFormatter.date(from: timestampStr)
+                ?? Self.isoFallback.date(from: timestampStr)
                 ?? Date()
 
             let inputTokens = lastUsage["input_tokens"] as? Int ?? 0
