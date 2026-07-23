@@ -190,9 +190,12 @@ final class DatabaseManager: @unchecked Sendable {
 
     func insertEvents(_ events: [UsageEvent]) async throws {
         try await dbPool.write { db in
+            // Batch prior-state lookup (was N+1). Map is updated in-loop so repeated turns
+            // of one session within a batch chain deltas exactly as the per-event query did.
+            var lastPromptBySession = try Self.fetchLastPromptTokens(for: events, in: db)
             for event in events {
                 var event = event
-                event.newInputTokens = try Self.computeNewInputTokens(for: event, in: db)
+                event.newInputTokens = Self.computeNewInputTokens(for: event, lastPrompt: event.sessionID.flatMap { lastPromptBySession[SessionKey(source: event.source.rawValue, sessionID: $0)] })
                 try event.save(db)
                 if let sessionID = event.sessionID {
                     try db.execute(sql: """
@@ -202,20 +205,43 @@ final class DatabaseManager: @unchecked Sendable {
                             lastPromptTokens = excluded.lastPromptTokens,
                             lastObservedAt = excluded.lastObservedAt
                         """, arguments: [event.source.rawValue, sessionID, event.promptTokens, event.observedAt])
+                    lastPromptBySession[SessionKey(source: event.source.rawValue, sessionID: sessionID)] = event.promptTokens
                 }
             }
         }
+    }
+
+    private struct SessionKey: Hashable {
+        let source: String
+        let sessionID: String
+    }
+
+    private static func fetchLastPromptTokens(for events: [UsageEvent], in db: Database) throws -> [SessionKey: Int] {
+        let keys = Set(events.compactMap { event in event.sessionID.map { SessionKey(source: event.source.rawValue, sessionID: $0) } })
+        guard !keys.isEmpty else { return [:] }
+        var result: [SessionKey: Int] = [:]
+        // Group sessionIDs by source so each source uses one IN(?) query.
+        let sessionIDsBySource = Dictionary(grouping: keys, by: { $0.source }).mapValues { keyList in keyList.map(\.sessionID) }
+        for (source, sessionIDs) in sessionIDsBySource {
+            let placeholders = Array(repeating: "?", count: sessionIDs.count).joined(separator: ", ")
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT sessionID, lastPromptTokens FROM session_input_state
+                WHERE source = ? AND sessionID IN (\(placeholders))
+                """, arguments: StatementArguments([source] + sessionIDs))
+            for row in rows {
+                let sessionID: String = row["sessionID"]
+                result[SessionKey(source: source, sessionID: sessionID)] = row["lastPromptTokens"]
+            }
+        }
+        return result
     }
 
     // Reset-aware positive delta of promptTokens within a (source, sessionID): a turn
     // whose prompt dropped below the last seen value (context compaction) or that opens
     // a session counts its full prompt as new; otherwise only the growth is new. Mirrors
     // the v9 backfill so live inserts and historical rows use identical math.
-    private static func computeNewInputTokens(for event: UsageEvent, in db: Database) throws -> Int {
-        guard let sessionID = event.sessionID else { return event.promptTokens }
-        let previous: Int? = try Row.fetchOne(db, sql: """
-            SELECT lastPromptTokens FROM session_input_state WHERE source = ? AND sessionID = ?
-            """, arguments: [event.source.rawValue, sessionID])?["lastPromptTokens"]
+    private static func computeNewInputTokens(for event: UsageEvent, lastPrompt previous: Int?) -> Int {
+        guard event.sessionID != nil else { return event.promptTokens }
         guard let prev = previous, event.promptTokens >= prev else { return event.promptTokens }
         return event.promptTokens - prev
     }

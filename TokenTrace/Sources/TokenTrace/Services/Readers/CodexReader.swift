@@ -6,6 +6,8 @@ final class CodexReader {
     private let dbPath: String
     private let codexHome: String
     private var dbQueue: DatabaseQueue?
+    private var rolloutPathCache: [String: String] = [:]
+    private var rolloutParseCache: [String: (mtime: Date, events: [RolloutEvent])] = [:]
 
     static let defaultPath: String = {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -73,11 +75,11 @@ final class CodexReader {
                         git_origin_url, cli_version, first_user_message,
                         rollout_path
                     FROM threads
-                    WHERE tokens_used > 0
+                    WHERE tokens_used > 0 AND updated_at >= ?
                     ORDER BY updated_at ASC
                     """
 
-                let rows = try Row.fetchAll(db, sql: sql)
+                let rows = try Row.fetchAll(db, sql: sql, arguments: [cursorState.updatedAt])
 
                 var events: [UsageEvent] = []
                 var maxUpdatedAt: Int64 = cursorState.updatedAt
@@ -218,6 +220,19 @@ final class CodexReader {
             return []
         }
 
+        let allEvents = parseAllRolloutEvents(at: path)
+        guard startIndex < allEvents.count else {
+            return []
+        }
+        return Array(allEvents[startIndex...])
+    }
+
+    private func parseAllRolloutEvents(at path: String) -> [RolloutEvent] {
+        let mtime = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date
+        if let mtime, let cached = rolloutParseCache[path], cached.mtime == mtime {
+            return cached.events
+        }
+
         guard let data = FileManager.default.contents(atPath: path),
               let content = String(data: data, encoding: .utf8) else {
             return []
@@ -226,7 +241,6 @@ final class CodexReader {
         var results: [RolloutEvent] = []
         var prevCumulativeTotal = 0
         var currentModel: String?
-        var validEntryCount = 0
 
         let lines = content.components(separatedBy: .newlines)
 
@@ -260,12 +274,6 @@ final class CodexReader {
                 continue
             }
 
-            if validEntryCount < startIndex {
-                validEntryCount += 1
-                prevCumulativeTotal = cumulativeTotal
-                continue
-            }
-
             let timestampStr = json["timestamp"] as? String ?? ""
             let timestamp = Self.isoFormatter.date(from: timestampStr)
                 ?? Self.isoFallback.date(from: timestampStr)
@@ -290,9 +298,11 @@ final class CodexReader {
             ))
 
             prevCumulativeTotal = cumulativeTotal
-            validEntryCount += 1
         }
 
+        if let mtime {
+            rolloutParseCache[path] = (mtime: mtime, events: results)
+        }
         return results
     }
 
@@ -304,12 +314,17 @@ final class CodexReader {
             return (codexHome as NSString).appendingPathComponent(rp)
         }
 
+        if let cached = rolloutPathCache[threadId] {
+            return cached
+        }
+
         let sessionsDir = (codexHome as NSString).appendingPathComponent("sessions")
         guard FileManager.default.fileExists(atPath: sessionsDir) else {
             return nil
         }
 
         if let found = findRolloutFile(in: sessionsDir, matching: threadId) {
+            rolloutPathCache[threadId] = found
             return found
         }
 

@@ -29,9 +29,7 @@ struct DailySummary: Identifiable, Sendable {
     }
 
     var id: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
+        Self.idFormatter.string(from: date)
     }
 
     var isToday: Bool {
@@ -41,8 +39,19 @@ struct DailySummary: Identifiable, Sendable {
     var formattedDate: String {
         if Calendar.current.isDateInToday(date) { return "Today" }
         if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
+        return Self.displayFormatter.string(from: date)
+    }
+
+    // Perf: id is read constantly during SwiftUI diffing; avoid per-access DateFormatter alloc.
+    private static let idFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    private static let displayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "EEE, MMM d"
-        return formatter.string(from: date)
-    }
+        return formatter
+    }()
 }

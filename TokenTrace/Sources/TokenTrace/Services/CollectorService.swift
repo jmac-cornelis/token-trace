@@ -7,6 +7,7 @@ final class CollectorService: ObservableObject {
     private let engine: CollectionEngine
     private let usageStore: UsageStore
     private var timer: Timer?
+    private var fileWatcher: FileWatcher?
     private var isRunning = false
     private var isCollecting = false
 
@@ -14,7 +15,8 @@ final class CollectorService: ObservableObject {
     @Published var lastCollectTime: Date?
     @Published var collectError: String?
 
-    var pollInterval: TimeInterval = 5.0
+    // Fallback safety net; FileWatcher drives collection in .local mode.
+    var pollInterval: TimeInterval = 60.0
 
     private var settingsCancellable: AnyCancellable?
 
@@ -43,11 +45,20 @@ final class CollectorService: ObservableObject {
                 await self?.collect()
             }
         }
+        let watcher = FileWatcher { [weak self] in
+            Task { @MainActor [weak self] in
+                await self?.collect()
+            }
+        }
+        watcher.start()
+        fileWatcher = watcher
     }
 
     func stop() {
         timer?.invalidate()
         timer = nil
+        fileWatcher?.stop()
+        fileWatcher = nil
         isRunning = false
     }
 

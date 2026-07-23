@@ -47,6 +47,9 @@ final class OpenclawReader {
         return f
     }()
 
+    // Hoisted out of the per-line loop: allocating a decoder per JSONL line was a malloc hotspot.
+    private static let lineDecoder = JSONDecoder()
+
     private struct CursorState: Codable {
         var processedFiles: [String: Int64]
     }
@@ -121,7 +124,7 @@ final class OpenclawReader {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty,
                   let lineData = trimmed.data(using: .utf8),
-                  let entry = try? JSONDecoder().decode(TranscriptEntry.self, from: lineData),
+                  let entry = try? Self.lineDecoder.decode(TranscriptEntry.self, from: lineData),
                   let message = entry.message,
                   message.role == "assistant",
                   let usage = message.usage,

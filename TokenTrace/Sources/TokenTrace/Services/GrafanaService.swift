@@ -94,6 +94,17 @@ private struct QueryWrapper<Q: Encodable>: Encodable {
 /// headers are required.
 final class GrafanaService {
 
+    // Perf: compiled once, not per parseTokenLogLines call.
+    private static let tokenLogRegex = try? NSRegularExpression(
+        pattern: #"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+:.*prompt=(\d+),\s*completion=(\d+),\s*total=(\d+)"#
+    )
+    private static let tokenLogDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        formatter.timeZone = TimeZone.current
+        return formatter
+    }()
+
     // MARK: - Configuration
 
     /// Base URL for the Grafana instance. Configurable for testing or alternate deployments.
@@ -449,19 +460,10 @@ final class GrafanaService {
     /// - Timestamp: `YYYY-MM-DD HH:MM:SS` (comma-separated milliseconds ignored)
     /// - prompt=N, completion=N, total=N
     private func parseTokenLogLines(_ lines: [String]) -> [ParsedTokenEntry] {
-        // Regex captures: (1) timestamp, (2) prompt tokens, (3) completion tokens, (4) total tokens.
-        // The timestamp format uses comma for millisecond separator (Python logging convention).
-        let pattern = #"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+:.*prompt=(\d+),\s*completion=(\d+),\s*total=(\d+)"#
-
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            // Pattern is a compile-time constant; failure here is a programming error.
+        guard let regex = Self.tokenLogRegex else {
             return []
         }
-
-        // Date formatter for the timestamp portion of each log line.
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        dateFormatter.timeZone = TimeZone.current
+        let dateFormatter = Self.tokenLogDateFormatter
 
         var entries: [ParsedTokenEntry] = []
 

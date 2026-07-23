@@ -167,6 +167,11 @@ enum CostEstimator {
     /// "fix" that adds a real data race.
     nonisolated(unsafe) static var configuredPricingTable: [ModelPricing] = defaultPricingTable
 
+    // Perf: lookup is rebuilt 3x per refresh; configuredPricingTable is write-once
+    // at startup so cache the derived dictionary and rebuild only in reloadConfiguredPricing.
+    nonisolated(unsafe) static var configuredPricingLookup: [String: ModelPricing] =
+        buildPricingLookup(from: defaultPricingTable)
+
     /// Overlays `opencode.json` prices on the built-in defaults (config wins
     /// per model name; defaults remain fallbacks). Missing/unparseable config
     /// leaves the defaults untouched. `explicitPath` overrides the search path.
@@ -174,6 +179,7 @@ enum CostEstimator {
     static func reloadConfiguredPricing(from explicitPath: String? = nil) -> [ModelPricing] {
         let configured = PricingConfigLoader.loadPricing(from: explicitPath)
         configuredPricingTable = mergePricing(defaults: defaultPricingTable, overrides: configured)
+        configuredPricingLookup = buildPricingLookup(from: configuredPricingTable)
         return configuredPricingTable
     }
 
@@ -210,9 +216,9 @@ enum CostEstimator {
         totalPromptTokens: Int,
         totalCompletionTokens: Int,
         modelRequestCounts: [ModelRequestCount],
-        pricingTable: [ModelPricing] = configuredPricingTable
+        pricingTable: [ModelPricing]? = nil
     ) -> CostEstimate {
-        let pricingLookup = pricingLookup(from: pricingTable)
+        let pricingLookup = lookup(for: pricingTable)
         let sanitizedRequestCounts = sanitizeModelRequestCounts(
             modelRequestCounts,
             pricingLookup: pricingLookup
@@ -337,8 +343,13 @@ enum CostEstimator {
         return trimmed
     }
 
-    private static func pricingLookup(from pricingTable: [ModelPricing]) -> [String: ModelPricing] {
+    static func buildPricingLookup(from pricingTable: [ModelPricing]) -> [String: ModelPricing] {
         Dictionary(uniqueKeysWithValues: pricingTable.map { ($0.modelName.lowercased(), $0) })
+    }
+
+    private static func lookup(for pricingTable: [ModelPricing]?) -> [String: ModelPricing] {
+        guard let pricingTable else { return configuredPricingLookup }
+        return buildPricingLookup(from: pricingTable)
     }
 
     private static func pricing(
@@ -370,22 +381,29 @@ enum CostEstimator {
             return "$0"
         }
 
+        // Static formatters: NumberFormatter alloc is costly and this runs per cost-row render.
+        let formatter = cost >= 1.0 ? Self.wholeDollarFormatter : Self.centsFormatter
+        return formatter.string(from: NSNumber(value: cost)) ?? "$0"
+    }
+
+    private static let wholeDollarFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
         formatter.numberStyle = .currency
         formatter.currencySymbol = "$"
         formatter.locale = Locale(identifier: "en_US")
+        formatter.maximumFractionDigits = 0
+        return formatter
+    }()
 
-        if cost >= 1.0 {
-            // Whole dollars with grouping separator, no cents.
-            formatter.maximumFractionDigits = 0
-        } else {
-            // Sub-dollar: show cents.
-            formatter.minimumFractionDigits = 2
-            formatter.maximumFractionDigits = 2
-        }
-
-        return formatter.string(from: NSNumber(value: cost)) ?? "$0"
-    }
+    private static let centsFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencySymbol = "$"
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        return formatter
+    }()
 
     // MARK: - Billable Token Computation
 
@@ -433,9 +451,9 @@ enum CostEstimator {
         cachedWriteTokens: Int,
         reasoningTokens: Int,
         model: String?,
-        pricingTable: [ModelPricing] = configuredPricingTable
+        pricingTable: [ModelPricing]? = nil
     ) -> Double {
-        let pricingLookup = pricingLookup(from: pricingTable)
+        let pricingLookup = lookup(for: pricingTable)
         let normalizedModel = canonicalModelName(model, pricingLookup: pricingLookup)
         let pricing = pricing(for: normalizedModel, pricingLookup: pricingLookup)
 
@@ -462,9 +480,9 @@ enum CostEstimator {
         cachedWriteTokens: Int,
         reasoningTokens: Int,
         model: String?,
-        pricingTable: [ModelPricing] = configuredPricingTable
+        pricingTable: [ModelPricing]? = nil
     ) -> Double {
-        let pricingLookup = pricingLookup(from: pricingTable)
+        let pricingLookup = lookup(for: pricingTable)
         let normalizedModel = canonicalModelName(model, pricingLookup: pricingLookup)
         let pricing = pricing(for: normalizedModel, pricingLookup: pricingLookup)
         let cacheReadRate = pricing.cacheReadPricePerMillion ?? pricing.inputPricePerMillion * cachedReadMultiplier
