@@ -183,18 +183,50 @@ final class DatabaseManager: @unchecked Sendable {
                 """)
         }
 
+        // v10: OpenCodeReader previously recorded projectName="/" and repoPath="/" for the
+        // ~1,145 sessions attached to OpenCode's synthetic 'global' project row, stored
+        // cost=0 for the ~26K assistant messages OpenCode itself never priced, and copied
+        // through OpenCode's negative `tokens.output` on 1,786 messages. All three are
+        // recomputed on read, so drop the opencode rows and its cursor to force a full
+        // re-ingest; session_input_state must go too or the reset-aware newInputTokens
+        // delta would start from stale prompt totals.
+        migrator.registerMigration("v10-opencode-project-cost-and-tokens") { db in
+            try db.execute(sql: "DELETE FROM usage_events WHERE source = 'opencode'")
+            try db.execute(sql: "DELETE FROM source_cursors WHERE source = 'opencode'")
+            try db.execute(sql: "DELETE FROM session_input_state WHERE source = 'opencode'")
+        }
+
         return migrator
     }
 
     // MARK: - Insert
 
+    /// A full re-ingest after a wipe migration hands us ~120K events at once; in one
+    /// transaction that measured a 1.19 GB peak footprint in a menu-bar app. Events must
+    /// stay in ascending observedAt order so the newInputTokens delta chain is unaffected
+    /// by where a chunk boundary falls.
+    private static let insertChunkSize = 5_000
+
     func insertEvents(_ events: [UsageEvent]) async throws {
+        // Chunks are separate transactions, so a mid-way failure leaves earlier chunks
+        // committed. That is safe: the caller only advances the cursor after a clean
+        // return, and `save` is an upsert on the primary key, so a retry re-applies the
+        // remainder without duplicating anything.
+        var index = events.startIndex
+        while index < events.endIndex {
+            let end = min(index + Self.insertChunkSize, events.endIndex)
+            try await insertChunk(Array(events[index..<end]))
+            index = end
+        }
+    }
+
+    private func insertChunk(_ events: [UsageEvent]) async throws {
         try await dbPool.write { db in
             // Batch prior-state lookup (was N+1). Map is updated in-loop so repeated turns
             // of one session within a batch chain deltas exactly as the per-event query did.
             var lastPromptBySession = try Self.fetchLastPromptTokens(for: events, in: db)
             for event in events {
-                var event = event
+                var event = Self.clampTokenCounts(event)
                 event.newInputTokens = Self.computeNewInputTokens(for: event, lastPrompt: event.sessionID.flatMap { lastPromptBySession[SessionKey(source: event.source.rawValue, sessionID: $0)] })
                 try event.save(db)
                 if let sessionID = event.sessionID {
@@ -209,6 +241,22 @@ final class DatabaseManager: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Structural floor for every writer. OpenCode is known to emit negative
+    /// `tokens.output` and ContinueReader/OpenclawReader forward provider counts
+    /// unchecked, and a single negative value corrupts every downstream SUM.
+    /// Semantic repair still belongs in each reader; this is only the last line.
+    private static func clampTokenCounts(_ event: UsageEvent) -> UsageEvent {
+        var event = event
+        event.promptTokens = max(0, event.promptTokens)
+        event.completionTokens = max(0, event.completionTokens)
+        event.cachedReadTokens = max(0, event.cachedReadTokens)
+        event.cachedWriteTokens = max(0, event.cachedWriteTokens)
+        event.reasoningTokens = max(0, event.reasoningTokens)
+        event.totalTokens = max(0, event.totalTokens)
+        event.estimatedCostUSD = max(0, event.estimatedCostUSD)
+        return event
     }
 
     private struct SessionKey: Hashable {

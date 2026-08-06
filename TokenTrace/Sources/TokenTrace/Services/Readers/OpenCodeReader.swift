@@ -87,51 +87,69 @@ final class OpenCodeReader {
 
                 sql += " ORDER BY m.time_created ASC"
 
-                let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
+                // Cursor rather than fetchAll: a first-run scan returns ~120K rows and each
+                // carries a duplicated `last_prompt` blob, so materializing the whole [Row]
+                // array alongside the [UsageEvent] array doubled peak memory for no gain.
+                let rows = try Row.fetchCursor(db, sql: sql, arguments: StatementArguments(arguments))
 
                 var events: [UsageEvent] = []
                 var latestTimestamp: String?
+                var sessionCache: [String: SessionColumns] = [:]
 
-                for row in rows {
+                while let row = try rows.next() {
                     let messageId: String = row["message_id"]
                     let sessionId: String = row["session_id"]
                     let timeCreated: Int64 = row["time_created"]
 
-                    let projectName = resolveProjectName(
-                        projectName: row["project_name"] as String?,
-                        worktree: row["project_worktree"] as String?,
-                        sessionDirectory: row["session_directory"] as String?
-                    )
-
-                    let repoPath = (row["project_worktree"] as String?)
-                        ?? (row["session_directory"] as String?)
+                    let session: SessionColumns
+                    if let cached = sessionCache[sessionId] {
+                        session = cached
+                    } else {
+                        session = SessionColumns(row: row)
+                        sessionCache[sessionId] = session
+                    }
 
                     let modelId: String? = row["model_id"]
                     let providerId: String? = row["provider_id"]
                     let agent: String? = row["agent"]
 
-                    let tokensTotal: Int = row["tokens_total"] ?? 0
-                    let tokensInput: Int = row["tokens_input"] ?? 0
-                    let tokensOutput: Int = row["tokens_output"] ?? 0
-                    let tokensReasoning: Int = row["tokens_reasoning"] ?? 0
-                    let cacheRead: Int = row["cache_read"] ?? 0
-                    let cacheWrite: Int = row["cache_write"] ?? 0
-                    let cost: Double = row["cost"] ?? 0.0
+                    // OpenCode wrote negative `tokens.output` on 1,786 assistant messages
+                    // between 2026-03-11 and 2026-05-07 (as low as -45,363) before patching
+                    // the bug upstream with the same clamp; `input`, `reasoning` and the
+                    // cache counters were never affected but are floored as cheap invariants.
+                    // `total` is deliberately NOT recomputed from the components: on 11,323
+                    // post-patch rows OpenCode already reports `total < input + output` by up
+                    // to 93,890 tokens, so recomputing would inflate reported volume.
+                    let tokensTotal: Int = max(0, row["tokens_total"] ?? 0)
+                    let tokensInput: Int = max(0, row["tokens_input"] ?? 0)
+                    let tokensOutput: Int = max(0, row["tokens_output"] ?? 0)
+                    let tokensReasoning: Int = max(0, row["tokens_reasoning"] ?? 0)
+                    let cacheRead: Int = max(0, row["cache_read"] ?? 0)
+                    let cacheWrite: Int = max(0, row["cache_write"] ?? 0)
 
                     let observedAt = Date(timeIntervalSince1970: Double(timeCreated) / 1000.0)
 
-                    let sessionTitle: String? = row["session_title"]
-                    let lastPrompt: String? = row["last_prompt"]
+                    let reportedCost: Double = row["cost"] ?? 0.0
+                    let cost = Self.resolveCost(
+                        reportedCost: reportedCost,
+                        model: modelId,
+                        observedAt: observedAt,
+                        promptTokens: tokensInput,
+                        completionTokens: tokensOutput,
+                        cachedReadTokens: cacheRead,
+                        cachedWriteTokens: cacheWrite,
+                        reasoningTokens: tokensReasoning
+                    )
 
                     let event = UsageEvent(
                         id: messageId,
                         observedAt: observedAt,
                         source: .opencode,
                         sessionID: sessionId,
-                        sessionTitle: sessionTitle,
+                        sessionTitle: session.title,
                         requestID: messageId,
-                        projectName: projectName,
-                        repoPath: repoPath,
+                        projectName: session.projectName,
+                        repoPath: session.repoPath,
                         provider: providerId,
                         model: modelId,
                         agent: agent,
@@ -142,7 +160,7 @@ final class OpenCodeReader {
                         reasoningTokens: tokensReasoning,
                         totalTokens: tokensTotal,
                         estimatedCostUSD: cost,
-                        lastPrompt: lastPrompt
+                        lastPrompt: session.lastPrompt
                     )
 
                     events.append(event)
@@ -156,6 +174,32 @@ final class OpenCodeReader {
             return results
         } catch {
             return (events: [], newCursor: cursor)
+        }
+    }
+
+    /// Per-session columns, cached so every row of a session shares one String
+    /// instance instead of a copy. The `last_prompt` subquery repeats the session's
+    /// latest prompt on every row it owns (232 MB across a full 120K-row scan), and
+    /// title/path repeat the same way; interning them collapses that to one copy.
+    private struct SessionColumns {
+        let title: String?
+        let projectName: String?
+        let repoPath: String?
+        let lastPrompt: String?
+
+        init(row: Row) {
+            title = row["session_title"]
+            lastPrompt = row["last_prompt"]
+            // Path is resolved before the name because the name is derived from it.
+            let repoPath = OpenCodeReader.resolveRepoPath(
+                worktree: row["project_worktree"] as String?,
+                sessionDirectory: row["session_directory"] as String?
+            )
+            self.repoPath = repoPath
+            projectName = OpenCodeReader.resolveProjectName(
+                projectName: row["project_name"] as String?,
+                repoPath: repoPath
+            )
         }
     }
 
@@ -219,21 +263,68 @@ final class OpenCodeReader {
 
     // MARK: - Private Helpers
 
-    /// Priority: project.name -> worktree basename -> session directory basename -> nil
-    private func resolveProjectName(
-        projectName: String?,
-        worktree: String?,
-        sessionDirectory: String?
-    ) -> String? {
-        if let name = projectName, !name.isEmpty {
-            return name
+    // MARK: - Cost Resolution
+
+    /// OpenCode leaves `$.cost` at 0 for ~26K historical assistant messages (all rows
+    /// before 2026-04-18, plus later subagent turns) even though token counts are
+    /// present, which silently under-reports spend. Fall back to local pricing only
+    /// when the model has a published price; models like "assistant" stay at 0 rather
+    /// than being charged the mid-range guess.
+    static func resolveCost(
+        reportedCost: Double,
+        model: String?,
+        observedAt: Date,
+        promptTokens: Int,
+        completionTokens: Int,
+        cachedReadTokens: Int,
+        cachedWriteTokens: Int,
+        reasoningTokens: Int
+    ) -> Double {
+        guard reportedCost <= 0,
+              promptTokens + completionTokens + reasoningTokens > 0,
+              CostEstimator.hasKnownPricing(for: model) else {
+            // 42 rows carry a negative `$.cost` straight from OpenCode; never pass one through.
+            return max(0, reportedCost)
         }
-        if let tree = worktree, !tree.isEmpty {
-            return URL(fileURLWithPath: tree).lastPathComponent
+
+        return CostEstimator.estimateCostFromEvents(
+            promptTokens: promptTokens,
+            completionTokens: completionTokens,
+            cachedReadTokens: cachedReadTokens,
+            cachedWriteTokens: cachedWriteTokens,
+            reasoningTokens: reasoningTokens,
+            model: model,
+            observedAt: observedAt
+        )
+    }
+
+    // MARK: - Path / Name Resolution
+
+    /// Paths that identify no real workspace. OpenCode inserts a synthetic project row
+    /// `id='global'` with `worktree='/'` for every session started outside a git repo
+    /// (1,145 of ~1,900 sessions locally), so `/` must be rejected rather than trusted.
+    private static let nonWorkspacePaths: Set<String> = ["/", ""]
+
+    /// Priority: project.worktree (when it names a real workspace) -> session.directory.
+    static func resolveRepoPath(worktree: String?, sessionDirectory: String?) -> String? {
+        if let tree = worktree?.trimmingCharacters(in: .whitespaces),
+           !nonWorkspacePaths.contains(tree) {
+            return tree
         }
-        if let dir = sessionDirectory, !dir.isEmpty {
-            return URL(fileURLWithPath: dir).lastPathComponent
+        if let dir = sessionDirectory?.trimmingCharacters(in: .whitespaces),
+           !nonWorkspacePaths.contains(dir) {
+            return dir
         }
         return nil
+    }
+
+    /// Priority: project.name -> basename of the already-resolved repo path -> nil.
+    static func resolveProjectName(projectName: String?, repoPath: String?) -> String? {
+        if let name = projectName?.trimmingCharacters(in: .whitespaces), !name.isEmpty {
+            return name
+        }
+        guard let repoPath else { return nil }
+        let basename = URL(fileURLWithPath: repoPath).lastPathComponent
+        return nonWorkspacePaths.contains(basename) ? nil : basename
     }
 }

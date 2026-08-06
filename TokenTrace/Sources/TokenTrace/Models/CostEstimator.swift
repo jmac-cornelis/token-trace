@@ -129,8 +129,19 @@ enum CostEstimator {
         ModelPricing(modelName: "developer-gpt",                            inputPricePerMillion: 2.5,   outputPricePerMillion: 30.0, cacheReadPricePerMillion: 0.25),
         ModelPricing(modelName: "developer-gpt-xhigh",                     inputPricePerMillion: 2.5,   outputPricePerMillion: 30.0, cacheReadPricePerMillion: 0.25),
         ModelPricing(modelName: "assistant-gpt",                            inputPricePerMillion: 2.5,   outputPricePerMillion: 30.0, cacheReadPricePerMillion: 0.25),
-        ModelPricing(modelName: "developer-glm",                            inputPricePerMillion: 0.6,   outputPricePerMillion: 2.2),
+        ModelPricing(modelName: "developer-glm",                            inputPricePerMillion: 0.6,   outputPricePerMillion: 2.2,  cacheReadPricePerMillion: 0.11),
         ModelPricing(modelName: "developer-kimi-k2.5",                     inputPricePerMillion: 0.5,   outputPricePerMillion: 2.8),
+        // These 7 account for ~27K stored events (developer-sol-xhigh alone is 14,318).
+        // They must exist here, not only in opencode.json: PricingConfigLoader returns an
+        // empty table on any parse failure, and a single bad edit to that file would
+        // silently drop them to $0 rather than surfacing an error.
+        ModelPricing(modelName: "developer-sol",                            inputPricePerMillion: 5.0,   outputPricePerMillion: 30.0, cacheReadPricePerMillion: 0.5),
+        ModelPricing(modelName: "developer-sol-xhigh",                      inputPricePerMillion: 5.0,   outputPricePerMillion: 30.0, cacheReadPricePerMillion: 0.5),
+        ModelPricing(modelName: "developer-terra",                          inputPricePerMillion: 2.5,   outputPricePerMillion: 15.0, cacheReadPricePerMillion: 0.25),
+        ModelPricing(modelName: "developer-luna",                           inputPricePerMillion: 1.0,   outputPricePerMillion: 6.0,  cacheReadPricePerMillion: 0.1),
+        ModelPricing(modelName: "developer-minimax",                        inputPricePerMillion: 0.5,   outputPricePerMillion: 2.2),
+        ModelPricing(modelName: "developer-opus-5",                         inputPricePerMillion: 5.0,   outputPricePerMillion: 25.0, cacheReadPricePerMillion: 0.5),
+        ModelPricing(modelName: "fable-5",                                  inputPricePerMillion: 5.0,   outputPricePerMillion: 25.0, cacheReadPricePerMillion: 0.5),
         ModelPricing(modelName: "cn_asic:react_local:claude-sonnet-4-5",   inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0),
 
         // --- Legacy models (kept for historical cost estimation) ---
@@ -156,6 +167,41 @@ enum CostEstimator {
     /// "developer-flash", but the priced config key is "developer-gemini-flash".
     static let modelAliases: [String: String] = [
         "developer-flash": "developer-gemini-flash",
+        "developer-kimi": "developer-kimi-k2.5",
+    ]
+
+    // MARK: - Effective-Dated Pricing
+
+    /// A price that was in effect only before `endingBefore`.
+    struct HistoricalPricing {
+        let endingBefore: Date
+        let pricing: ModelPricing
+    }
+
+    /// Cornelis raised `developer-gpt` and `developer-codex-max` from $2.50/$15.00 to
+    /// $5.00/$30.00 at the start of May 2026. Every turn we have to price ourselves for
+    /// those two models predates that change, so charging current rates overbills by
+    /// $1,412.56. Ordered oldest-first; the first entry whose `endingBefore` is after the
+    /// event wins. Models whose rates never moved are deliberately absent.
+    static let historicalPricingTable: [String: [HistoricalPricing]] = [
+        "developer-gpt": [
+            HistoricalPricing(
+                endingBefore: Date(timeIntervalSince1970: 1_777_593_600),
+                pricing: ModelPricing(modelName: "developer-gpt", inputPricePerMillion: 2.5, outputPricePerMillion: 15.0, cacheReadPricePerMillion: 0.25)
+            ),
+        ],
+        "developer-gpt-xhigh": [
+            HistoricalPricing(
+                endingBefore: Date(timeIntervalSince1970: 1_777_593_600),
+                pricing: ModelPricing(modelName: "developer-gpt-xhigh", inputPricePerMillion: 2.5, outputPricePerMillion: 15.0, cacheReadPricePerMillion: 0.25)
+            ),
+        ],
+        "developer-codex-max": [
+            HistoricalPricing(
+                endingBefore: Date(timeIntervalSince1970: 1_777_593_600),
+                pricing: ModelPricing(modelName: "developer-codex-max", inputPricePerMillion: 2.5, outputPricePerMillion: 15.0, cacheReadPricePerMillion: 0.25)
+            ),
+        ],
     ]
 
     // MARK: - Dynamic (config-driven) Pricing
@@ -352,15 +398,34 @@ enum CostEstimator {
         return buildPricingLookup(from: pricingTable)
     }
 
+    /// Whether `model` resolves to a real pricing entry rather than the mid-range
+    /// `unknownModelPricing` guess. Callers that synthesize missing costs use this to
+    /// avoid inventing spend for models with no published price (e.g. "assistant",
+    /// which `opencode.json` declares with no `cost` block).
+    static func hasKnownPricing(for model: String?, pricingTable: [ModelPricing]? = nil) -> Bool {
+        guard let key = model?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !key.isEmpty else {
+            return false
+        }
+        let pricingLookup = lookup(for: pricingTable)
+        if pricingLookup[key] != nil { return true }
+        if let aliased = modelAliases[key] { return pricingLookup[aliased] != nil }
+        return false
+    }
+
     private static func pricing(
         for model: String?,
-        pricingLookup: [String: ModelPricing]
+        pricingLookup: [String: ModelPricing],
+        observedAt: Date? = nil
     ) -> ModelPricing {
         guard let model else {
             return unknownModelPricing
         }
 
         let key = model.lowercased()
+        if let observedAt, let historical = historicalPricing(for: key, observedAt: observedAt) {
+            return historical
+        }
         if let direct = pricingLookup[key] {
             return direct
         }
@@ -368,6 +433,11 @@ enum CostEstimator {
             return viaAlias
         }
         return unknownModelPricing
+    }
+
+    private static func historicalPricing(for key: String, observedAt: Date) -> ModelPricing? {
+        guard let eras = historicalPricingTable[key] else { return nil }
+        return eras.first { observedAt < $0.endingBefore }?.pricing
     }
 
     // MARK: - Formatting
@@ -451,11 +521,12 @@ enum CostEstimator {
         cachedWriteTokens: Int,
         reasoningTokens: Int,
         model: String?,
-        pricingTable: [ModelPricing]? = nil
+        pricingTable: [ModelPricing]? = nil,
+        observedAt: Date? = nil
     ) -> Double {
         let pricingLookup = lookup(for: pricingTable)
         let normalizedModel = canonicalModelName(model, pricingLookup: pricingLookup)
-        let pricing = pricing(for: normalizedModel, pricingLookup: pricingLookup)
+        let pricing = pricing(for: normalizedModel, pricingLookup: pricingLookup, observedAt: observedAt)
 
         let uncached = max(0, promptTokens - cachedReadTokens - cachedWriteTokens)
         let uncachedAndWriteInputCost = (Double(uncached) * uncachedMultiplier
