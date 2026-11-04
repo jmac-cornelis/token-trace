@@ -8,17 +8,20 @@ struct ModelPricing {
     let inputPricePerMillion: Double
     let outputPricePerMillion: Double
     let cacheReadPricePerMillion: Double?
+    let cacheWritePricePerMillion: Double?
 
     init(
         modelName: String,
         inputPricePerMillion: Double,
         outputPricePerMillion: Double,
-        cacheReadPricePerMillion: Double? = nil
+        cacheReadPricePerMillion: Double? = nil,
+        cacheWritePricePerMillion: Double? = nil
     ) {
         self.modelName = modelName
         self.inputPricePerMillion = inputPricePerMillion
         self.outputPricePerMillion = outputPricePerMillion
         self.cacheReadPricePerMillion = cacheReadPricePerMillion
+        self.cacheWritePricePerMillion = cacheWritePricePerMillion
     }
 }
 
@@ -117,35 +120,37 @@ enum CostEstimator {
         ModelPricing(modelName: "kimi-k2.5",                                inputPricePerMillion: 0.5,   outputPricePerMillion: 2.8),
 
         // --- OpenCode modelID aliases (keys stored in $.modelID) ---
-        ModelPricing(modelName: "developer-opus",                           inputPricePerMillion: 5.0,   outputPricePerMillion: 25.0),
-        ModelPricing(modelName: "developer-opus-extended",                  inputPricePerMillion: 5.0,   outputPricePerMillion: 25.0),
-        ModelPricing(modelName: "developer-sonnet",                         inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0),
-        ModelPricing(modelName: "developer-sonnet-4.6",                     inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0),
+        ModelPricing(modelName: "developer-opus",                           inputPricePerMillion: 4.0,   outputPricePerMillion: 20.0, cacheReadPricePerMillion: 0.2,   cacheWritePricePerMillion: 5.0),
+        ModelPricing(modelName: "developer-opus-extended",                  inputPricePerMillion: 4.0,   outputPricePerMillion: 20.0, cacheReadPricePerMillion: 0.2,   cacheWritePricePerMillion: 5.0),
+        ModelPricing(modelName: "developer-sonnet",                         inputPricePerMillion: 2.0,   outputPricePerMillion: 10.0, cacheReadPricePerMillion: 0.2,   cacheWritePricePerMillion: 2.5),
+        ModelPricing(modelName: "developer-sonnet-4.6",                     inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0, cacheReadPricePerMillion: 0.3,   cacheWritePricePerMillion: 3.75),
         ModelPricing(modelName: "developer-codex",                          inputPricePerMillion: 1.75,  outputPricePerMillion: 14.0),
         ModelPricing(modelName: "developer-codex-max",                      inputPricePerMillion: 1.75,  outputPricePerMillion: 14.0),
-        ModelPricing(modelName: "developer-gemini",                         inputPricePerMillion: 2.0,   outputPricePerMillion: 12.0),
-        ModelPricing(modelName: "developer-gemini-flash",                   inputPricePerMillion: 0.5,   outputPricePerMillion: 3.0),
+        ModelPricing(modelName: "developer-gemini",                         inputPricePerMillion: 2.0,   outputPricePerMillion: 12.0, cacheReadPricePerMillion: 0.2),
+        ModelPricing(modelName: "developer-gemini-flash",                   inputPricePerMillion: 0.5,   outputPricePerMillion: 3.0,  cacheReadPricePerMillion: 0.15),
         ModelPricing(modelName: "developer-deepseek",                       inputPricePerMillion: 2.1,   outputPricePerMillion: 4.4,  cacheReadPricePerMillion: 0.2),
+        ModelPricing(modelName: "developer-deepseek-flash",                 inputPricePerMillion: 0.9,   outputPricePerMillion: 0.9,  cacheReadPricePerMillion: 0.45),
         ModelPricing(modelName: "developer-gpt",                            inputPricePerMillion: 2.5,   outputPricePerMillion: 30.0, cacheReadPricePerMillion: 0.25),
         ModelPricing(modelName: "developer-gpt-xhigh",                     inputPricePerMillion: 2.5,   outputPricePerMillion: 30.0, cacheReadPricePerMillion: 0.25),
         ModelPricing(modelName: "assistant-gpt",                            inputPricePerMillion: 2.5,   outputPricePerMillion: 30.0, cacheReadPricePerMillion: 0.25),
-        ModelPricing(modelName: "developer-glm",                            inputPricePerMillion: 0.6,   outputPricePerMillion: 2.2,  cacheReadPricePerMillion: 0.11),
+        ModelPricing(modelName: "developer-glm",                            inputPricePerMillion: 2.1,   outputPricePerMillion: 6.6,  cacheReadPricePerMillion: 0.39),
         ModelPricing(modelName: "developer-kimi-k2.5",                     inputPricePerMillion: 0.5,   outputPricePerMillion: 2.8),
+        ModelPricing(modelName: "developer-qwen",                           inputPricePerMillion: 2.0,   outputPricePerMillion: 6.0,  cacheReadPricePerMillion: 0.25),
         // These 7 account for ~27K stored events (developer-sol-xhigh alone is 14,318).
         // They must exist here, not only in opencode.json: PricingConfigLoader returns an
         // empty table on any parse failure, and a single bad edit to that file would
         // silently drop them to $0 rather than surfacing an error.
-        ModelPricing(modelName: "developer-sol",                            inputPricePerMillion: 5.0,   outputPricePerMillion: 30.0, cacheReadPricePerMillion: 0.5),
-        ModelPricing(modelName: "developer-sol-xhigh",                      inputPricePerMillion: 5.0,   outputPricePerMillion: 30.0, cacheReadPricePerMillion: 0.5),
-        ModelPricing(modelName: "developer-terra",                          inputPricePerMillion: 2.5,   outputPricePerMillion: 15.0, cacheReadPricePerMillion: 0.25),
-        ModelPricing(modelName: "developer-luna",                           inputPricePerMillion: 1.0,   outputPricePerMillion: 6.0,  cacheReadPricePerMillion: 0.1),
-        ModelPricing(modelName: "developer-minimax",                        inputPricePerMillion: 0.5,   outputPricePerMillion: 2.2),
-        ModelPricing(modelName: "developer-opus-5",                         inputPricePerMillion: 5.0,   outputPricePerMillion: 25.0, cacheReadPricePerMillion: 0.5),
+        ModelPricing(modelName: "developer-sol",                            inputPricePerMillion: 2.0,   outputPricePerMillion: 10.0, cacheReadPricePerMillion: 0.2,   cacheWritePricePerMillion: 2.0),
+        ModelPricing(modelName: "developer-sol-xhigh",                      inputPricePerMillion: 2.0,   outputPricePerMillion: 10.0, cacheReadPricePerMillion: 0.2,   cacheWritePricePerMillion: 2.0),
+        ModelPricing(modelName: "developer-terra",                          inputPricePerMillion: 2.0,   outputPricePerMillion: 10.0, cacheReadPricePerMillion: 0.05,  cacheWritePricePerMillion: 1.0),
+        ModelPricing(modelName: "developer-luna",                           inputPricePerMillion: 0.1,   outputPricePerMillion: 0.5,  cacheReadPricePerMillion: 0.01,  cacheWritePricePerMillion: 0.125),
+        ModelPricing(modelName: "developer-minimax",                        inputPricePerMillion: 0.3,   outputPricePerMillion: 1.2,  cacheReadPricePerMillion: 0.1),
+        ModelPricing(modelName: "developer-opus-5",                         inputPricePerMillion: 4.0,   outputPricePerMillion: 20.0, cacheReadPricePerMillion: 0.2,   cacheWritePricePerMillion: 5.0),
         ModelPricing(modelName: "developer-argon",                          inputPricePerMillion: 2.0,   outputPricePerMillion: 10.0, cacheReadPricePerMillion: 0.1),
         ModelPricing(modelName: "developer-gemini-argon",                   inputPricePerMillion: 2.0,   outputPricePerMillion: 10.0, cacheReadPricePerMillion: 0.1),
         ModelPricing(modelName: "developer-ember",                          inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0, cacheReadPricePerMillion: 0.3),
         ModelPricing(modelName: "developer-astra",                          inputPricePerMillion: 10.0,  outputPricePerMillion: 50.0, cacheReadPricePerMillion: 1.0),
-        ModelPricing(modelName: "developer-fable",                          inputPricePerMillion: 10.0,  outputPricePerMillion: 50.0, cacheReadPricePerMillion: 0.25),
+        ModelPricing(modelName: "developer-fable",                          inputPricePerMillion: 10.0,  outputPricePerMillion: 50.0, cacheReadPricePerMillion: 0.25,  cacheWritePricePerMillion: 12.5),
         ModelPricing(modelName: "developer-glm-flash",                      inputPricePerMillion: 0.15,  outputPricePerMillion: 0.5,  cacheReadPricePerMillion: 0.03),
         ModelPricing(modelName: "developer-opus-4.6",                       inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0, cacheReadPricePerMillion: 0.3),
         ModelPricing(modelName: "fable-5",                                  inputPricePerMillion: 5.0,   outputPricePerMillion: 25.0, cacheReadPricePerMillion: 0.5),
@@ -244,8 +249,18 @@ enum CostEstimator {
 
         func upsert(_ pricing: ModelPricing) {
             let key = pricing.modelName.lowercased()
-            if byName[key] == nil { order.append(key) }
-            byName[key] = pricing
+            if let existing = byName[key] {
+                byName[key] = ModelPricing(
+                    modelName: pricing.modelName,
+                    inputPricePerMillion: pricing.inputPricePerMillion,
+                    outputPricePerMillion: pricing.outputPricePerMillion,
+                    cacheReadPricePerMillion: pricing.cacheReadPricePerMillion ?? existing.cacheReadPricePerMillion,
+                    cacheWritePricePerMillion: pricing.cacheWritePricePerMillion ?? existing.cacheWritePricePerMillion
+                )
+            } else {
+                order.append(key)
+                byName[key] = pricing
+            }
         }
 
         defaults.forEach(upsert)
@@ -536,12 +551,11 @@ enum CostEstimator {
         let pricing = pricing(for: normalizedModel, pricingLookup: pricingLookup, observedAt: observedAt)
 
         let uncached = max(0, promptTokens - cachedReadTokens - cachedWriteTokens)
-        let uncachedAndWriteInputCost = (Double(uncached) * uncachedMultiplier
-            + Double(cachedWriteTokens) * cachedWriteMultiplier)
-            * pricing.inputPricePerMillion / 1_000_000.0
-        let cachedReadInputCost = Double(cachedReadTokens)
-            * (pricing.cacheReadPricePerMillion ?? pricing.inputPricePerMillion * cachedReadMultiplier)
-            / 1_000_000.0
+        let cacheReadRate = pricing.cacheReadPricePerMillion ?? pricing.inputPricePerMillion * cachedReadMultiplier
+        let cacheWriteRate = pricing.cacheWritePricePerMillion ?? pricing.inputPricePerMillion * cachedWriteMultiplier
+        let uncachedAndWriteInputCost = Double(uncached) * uncachedMultiplier * pricing.inputPricePerMillion / 1_000_000.0
+            + Double(cachedWriteTokens) * cacheWriteRate / 1_000_000.0
+        let cachedReadInputCost = Double(cachedReadTokens) * cacheReadRate / 1_000_000.0
         let inputCost = uncachedAndWriteInputCost + cachedReadInputCost
 
         let outputCost = Double(completionTokens + reasoningTokens)
@@ -564,12 +578,13 @@ enum CostEstimator {
         let normalizedModel = canonicalModelName(model, pricingLookup: pricingLookup)
         let pricing = pricing(for: normalizedModel, pricingLookup: pricingLookup)
         let cacheReadRate = pricing.cacheReadPricePerMillion ?? pricing.inputPricePerMillion * cachedReadMultiplier
+        let cacheWriteRate = pricing.cacheWritePricePerMillion ?? pricing.inputPricePerMillion * cachedWriteMultiplier
 
         let inputCost: Double
         if cachedReadTokens + cachedWriteTokens > 0 {
             let uncached = max(0, promptTokens - cachedReadTokens - cachedWriteTokens)
-            inputCost = (Double(uncached) * uncachedMultiplier + Double(cachedWriteTokens) * cachedWriteMultiplier)
-                * pricing.inputPricePerMillion / 1_000_000.0
+            inputCost = Double(uncached) * uncachedMultiplier * pricing.inputPricePerMillion / 1_000_000.0
+                + Double(cachedWriteTokens) * cacheWriteRate / 1_000_000.0
                 + Double(cachedReadTokens) * cacheReadRate / 1_000_000.0
         } else {
             // No provider cache split recorded: treat the re-sent prefix (prompt - new) as a

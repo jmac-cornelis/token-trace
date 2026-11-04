@@ -88,11 +88,13 @@ enum PricingConfigLoader {
                 }
 
                 let cacheRead = doubleValue(cost["cache_read"])
+                let cacheWrite = doubleValue(cost["cache_write"])
                 result.append(ModelPricing(
                     modelName: modelName,
                     inputPricePerMillion: input,
                     outputPricePerMillion: output,
-                    cacheReadPricePerMillion: cacheRead
+                    cacheReadPricePerMillion: cacheRead,
+                    cacheWritePricePerMillion: cacheWrite
                 ))
             }
         }

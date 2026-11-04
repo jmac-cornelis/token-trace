@@ -278,6 +278,74 @@ final class DatabaseManager: @unchecked Sendable {
                 """)
         }
 
+        // v13: Re-price cached turns where OpenCode reported $.cost = 0 and the old
+        // default pricing table lacked per-model cacheRead/cacheWrite rates (e.g.
+        // developer-terra $0.05/M cache_read and $1.00/M cache_write, developer-opus
+        // $4/$20/$0.20/$5.00, developer-sonnet $2/$10/$0.20/$2.50, developer-sol $2/$10/$0.20/$2.00,
+        // developer-luna $0.10/$0.50/$0.01/$0.125).
+        migrator.registerMigration("v13-gateway-cache-write-pricing") { db in
+            try db.execute(sql: """
+                UPDATE usage_events
+                SET estimatedCostUSD = (
+                    promptTokens * 2.0
+                    + cachedReadTokens * 0.05
+                    + cachedWriteTokens * 1.0
+                    + (completionTokens + reasoningTokens) * 10.0
+                ) / 1000000.0
+                WHERE source IN ('opencode', 'hermes')
+                  AND LOWER(model) = 'developer-terra'
+                  AND (cachedReadTokens + cachedWriteTokens) > 0
+                """)
+            try db.execute(sql: """
+                UPDATE usage_events
+                SET estimatedCostUSD = (
+                    promptTokens * 2.0
+                    + cachedReadTokens * 0.2
+                    + cachedWriteTokens * 2.0
+                    + (completionTokens + reasoningTokens) * 10.0
+                ) / 1000000.0
+                WHERE source IN ('opencode', 'hermes')
+                  AND LOWER(model) IN ('developer-sol', 'developer-sol-xhigh')
+                  AND (cachedReadTokens + cachedWriteTokens) > 0
+                """)
+            try db.execute(sql: """
+                UPDATE usage_events
+                SET estimatedCostUSD = (
+                    promptTokens * 0.1
+                    + cachedReadTokens * 0.01
+                    + cachedWriteTokens * 0.125
+                    + (completionTokens + reasoningTokens) * 0.5
+                ) / 1000000.0
+                WHERE source IN ('opencode', 'hermes')
+                  AND LOWER(model) = 'developer-luna'
+                  AND (cachedReadTokens + cachedWriteTokens) > 0
+                """)
+            try db.execute(sql: """
+                UPDATE usage_events
+                SET estimatedCostUSD = (
+                    promptTokens * 4.0
+                    + cachedReadTokens * 0.2
+                    + cachedWriteTokens * 5.0
+                    + (completionTokens + reasoningTokens) * 20.0
+                ) / 1000000.0
+                WHERE source IN ('opencode', 'hermes')
+                  AND LOWER(model) IN ('developer-opus', 'developer-opus-extended', 'developer-opus-5')
+                  AND (cachedReadTokens + cachedWriteTokens) > 0
+                """)
+            try db.execute(sql: """
+                UPDATE usage_events
+                SET estimatedCostUSD = (
+                    promptTokens * 2.0
+                    + cachedReadTokens * 0.2
+                    + cachedWriteTokens * 2.5
+                    + (completionTokens + reasoningTokens) * 10.0
+                ) / 1000000.0
+                WHERE source IN ('opencode', 'hermes')
+                  AND LOWER(model) = 'developer-sonnet'
+                  AND (cachedReadTokens + cachedWriteTokens) > 0
+                """)
+        }
+
         return migrator
     }
 
@@ -388,10 +456,15 @@ final class DatabaseManager: @unchecked Sendable {
     func todaySummary() async throws -> (total: Int, prompt: Int, newInput: Int, completion: Int, cached: Int, reasoning: Int, cachedRead: Int, cachedWrite: Int, estimatedCost: Double, bySource: [UsageEvent.Source: Int]) {
         let startOfDay = Calendar.current.startOfDay(for: Date())
         return try await dbPool.read { db in
+            // OpenCode, Hermes, and Openclaw store uncached input in `promptTokens` and
+            // cached read/write tokens in `cachedReadTokens`/`cachedWriteTokens`, whereas
+            // Codex stores full prompt context (including cache) in `promptTokens`.
+            // Normalize `prompt` to full prompt context so `BillableTokens` (`prompt - cache`)
+            // and the UI "In" / "Prompt" counters match Grafana's `prompt_tokens`.
             let rows = try Row.fetchAll(db, sql: """
                 SELECT source,
                        COALESCE(SUM(totalTokens), 0) as total,
-                       COALESCE(SUM(promptTokens), 0) as prompt,
+                       COALESCE(SUM(CASE WHEN source = 'codex' THEN promptTokens ELSE promptTokens + cachedReadTokens + cachedWriteTokens END), 0) as prompt,
                        COALESCE(SUM(newInputTokens), 0) as newInput,
                        COALESCE(SUM(completionTokens), 0) as completion,
                        COALESCE(SUM(cachedReadTokens), 0) as cachedRead,
@@ -431,7 +504,7 @@ final class DatabaseManager: @unchecked Sendable {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT e.sessionID, e.source, e.projectName, e.model, e.agent, e.sessionTitle,
                        COALESCE(SUM(e.totalTokens), 0) as totalTokens,
-                       COALESCE(SUM(e.promptTokens), 0) as promptTokens,
+                       COALESCE(SUM(CASE WHEN e.source = 'codex' THEN e.promptTokens ELSE e.promptTokens + e.cachedReadTokens + e.cachedWriteTokens END), 0) as promptTokens,
                        COALESCE(SUM(e.newInputTokens), 0) as newInputTokens,
                        COALESCE(SUM(e.completionTokens), 0) as completionTokens,
                        COALESCE(SUM(e.cachedReadTokens) + SUM(e.cachedWriteTokens), 0) as cachedTokens,
@@ -496,9 +569,9 @@ final class DatabaseManager: @unchecked Sendable {
     func dailySummaries(days: Int = 14) async throws -> [DailySummary] {
         return try await dbPool.read { db in
             let rows = try Row.fetchAll(db, sql: """
-                SELECT date(observedAt) as day,
+                SELECT date(observedAt, 'localtime') as day,
                        COALESCE(SUM(totalTokens), 0) as total,
-                       COALESCE(SUM(promptTokens), 0) as prompt,
+                       COALESCE(SUM(CASE WHEN source = 'codex' THEN promptTokens ELSE promptTokens + cachedReadTokens + cachedWriteTokens END), 0) as prompt,
                        COALESCE(SUM(newInputTokens), 0) as newInput,
                        COALESCE(SUM(completionTokens), 0) as completion,
                        COALESCE(SUM(cachedReadTokens) + SUM(cachedWriteTokens), 0) as cached,
@@ -509,7 +582,7 @@ final class DatabaseManager: @unchecked Sendable {
                        COUNT(DISTINCT sessionID) as sessionCount
                 FROM usage_events
                 WHERE observedAt >= date('now', '-\(days) days')
-                GROUP BY date(observedAt)
+                GROUP BY date(observedAt, 'localtime')
                 ORDER BY day DESC
                 """)
 
@@ -565,7 +638,7 @@ final class DatabaseManager: @unchecked Sendable {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT e.sessionID, e.source, e.projectName, e.model, e.agent, e.sessionTitle,
                        COALESCE(SUM(e.totalTokens), 0) as totalTokens,
-                       COALESCE(SUM(e.promptTokens), 0) as promptTokens,
+                       COALESCE(SUM(CASE WHEN e.source = 'codex' THEN e.promptTokens ELSE e.promptTokens + e.cachedReadTokens + e.cachedWriteTokens END), 0) as promptTokens,
                        COALESCE(SUM(e.newInputTokens), 0) as newInputTokens,
                        COALESCE(SUM(e.completionTokens), 0) as completionTokens,
                        COALESCE(SUM(e.cachedReadTokens) + SUM(e.cachedWriteTokens), 0) as cachedTokens,
@@ -641,7 +714,7 @@ final class DatabaseManager: @unchecked Sendable {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT \(periodExpr) as period,
                        COALESCE(SUM(totalTokens), 0) as total,
-                       COALESCE(SUM(promptTokens), 0) as prompt,
+                       COALESCE(SUM(CASE WHEN source = 'codex' THEN promptTokens ELSE promptTokens + cachedReadTokens + cachedWriteTokens END), 0) as prompt,
                        COALESCE(SUM(newInputTokens), 0) as newInput,
                        COALESCE(SUM(completionTokens), 0) as completion
                 FROM usage_events
@@ -676,7 +749,7 @@ final class DatabaseManager: @unchecked Sendable {
 
             let row = try Row.fetchOne(db, sql: """
                 SELECT COALESCE(SUM(totalTokens), 0) as total,
-                       COALESCE(SUM(promptTokens), 0) as prompt,
+                       COALESCE(SUM(CASE WHEN source = 'codex' THEN promptTokens ELSE promptTokens + cachedReadTokens + cachedWriteTokens END), 0) as prompt,
                        COALESCE(SUM(newInputTokens), 0) as newInput,
                        COALESCE(SUM(completionTokens), 0) as completion,
                        COALESCE(SUM(cachedReadTokens) + SUM(cachedWriteTokens), 0) as cached,
@@ -690,6 +763,60 @@ final class DatabaseManager: @unchecked Sendable {
 
             guard let row = row else { return (0, 0, 0, 0, 0, 0, 0, 0, 0.0) }
             return (row["total"], row["prompt"], row["newInput"], row["completion"], row["cached"], row["reasoning"], row["cachedRead"], row["cachedWrite"], row["cost"])
+        }
+    }
+
+    func todayModelCostEstimate() async throws -> CostEstimate {
+        let startOfDay = Calendar.current.startOfDay(for: Date())
+        return try await dbPool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT COALESCE(NULLIF(TRIM(model), ''), 'unknown') as model,
+                       COUNT(*) as reqCount,
+                       COALESCE(SUM(CASE WHEN source = 'codex' THEN promptTokens ELSE promptTokens + cachedReadTokens + cachedWriteTokens END), 0) as prompt,
+                       COALESCE(SUM(completionTokens + reasoningTokens), 0) as output,
+                       COALESCE(SUM(estimatedCostUSD), 0.0) as cost
+                FROM usage_events
+                WHERE observedAt >= ?
+                GROUP BY 1
+                ORDER BY cost DESC, reqCount DESC
+                """, arguments: [startOfDay])
+
+            let totalReqs = rows.reduce(0) { $0 + ($1["reqCount"] as Int) }
+            var totalCost = 0.0
+            var totalInput = 0
+            var totalOutput = 0
+            var perModel: [ModelCostEstimate] = []
+
+            for row in rows {
+                let modelName: String = row["model"]
+                let reqCount: Int = row["reqCount"]
+                let prompt: Int = row["prompt"]
+                let output: Int = row["output"]
+                let cost: Double = row["cost"]
+                let pct = totalReqs > 0 ? Double(reqCount) / Double(totalReqs) : 0.0
+
+                totalCost += cost
+                totalInput += prompt
+                totalOutput += output
+
+                perModel.append(ModelCostEstimate(
+                    modelName: modelName,
+                    requestCount: reqCount,
+                    requestPercentage: pct,
+                    estimatedInputTokens: prompt,
+                    estimatedOutputTokens: output,
+                    estimatedCost: cost
+                ))
+            }
+
+            return CostEstimate(
+                totalEstimatedCost: totalCost,
+                perModelEstimates: perModel,
+                totalInputTokens: totalInput,
+                totalOutputTokens: totalOutput,
+                timeRange: "Today",
+                caveats: []
+            )
         }
     }
 

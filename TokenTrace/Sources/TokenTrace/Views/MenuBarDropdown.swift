@@ -76,66 +76,71 @@ struct MenuBarDropdown: View {
 
     private var todaySummarySection: some View {
         VStack(alignment: .leading, spacing: 6) {
+            Text("TODAY")
+                .font(.caption2)
+                .fontWeight(.medium)
+                .foregroundStyle(.tertiary)
+
             HStack(alignment: .firstTextBaseline) {
-                Text("TODAY")
-                    .font(.caption2)
-                    .fontWeight(.medium)
-                    .foregroundStyle(.tertiary)
-                Text(usageStore.dataSourceLabel)
-                    .font(.system(size: 8))
-                    .foregroundStyle(.quaternary)
+                Text(UsageStore.formatTokens(usageStore.todayUniqueWork))
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                Text("unique tokens")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
+            .help("Unique work = new input + output + reasoning. Excludes the growing conversation context that is re-sent on every turn.")
 
-            if usageStore.isLoadingGrafana && usageStore.todayTotalTokens == 0 {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Fetching from Grafana…")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(height: 34)
-            } else {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(UsageStore.formatTokens(usageStore.todayUniqueWork))
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
+            HStack(spacing: 4) {
+                Text("Provider total")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Text(UsageStore.formatTokens(usageStore.todayTotalTokens))
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+                if usageStore.todayEstimatedCost > 0 {
+                    Text("·")
+                        .font(.caption2)
+                        .foregroundStyle(.quaternary)
+                    Text(CostEstimator.formatCost(usageStore.todayEstimatedCost))
+                        .font(.caption2)
+                        .fontWeight(.medium)
                         .monospacedDigit()
-                    Text("unique tokens")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.orange)
                 }
-                .help("Unique work = new input + output + reasoning. Excludes the growing conversation context that is re-sent on every turn.")
+            }
+            .help("Total tokens the provider processed (including cached context) and estimated cost using gateway cache-read / cache-write rates.")
 
+            HStack(spacing: 12) {
                 HStack(spacing: 4) {
-                    Text("Provider total")
+                    Text("Prompt")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
-                    Text(UsageStore.formatTokens(usageStore.todayTotalTokens))
-                        .font(.caption2)
+                    Text(UsageStore.formatTokens(usageStore.todayPromptTokens))
+                        .font(.caption)
                         .monospacedDigit()
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                 }
-                .help("Total tokens the provider processed, counting re-sent context on every turn. This is the uncached billing basis, not a measure of unique work.")
-
-                HStack(spacing: 12) {
+                if usageStore.todayCachedTokens > 0 {
                     HStack(spacing: 4) {
-                        Text("In")
+                        Text("Cached")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
-                        Text(UsageStore.formatTokens(usageStore.todayPromptTokens))
+                        Text(UsageStore.formatTokens(usageStore.todayCachedTokens))
                             .font(.caption)
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
                     }
-                    HStack(spacing: 4) {
-                        Text("Out")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                        Text(UsageStore.formatTokens(usageStore.todayCompletionTokens))
-                            .font(.caption)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
+                }
+                HStack(spacing: 4) {
+                    Text("Out")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Text(UsageStore.formatTokens(usageStore.todayCompletionTokens))
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
                 }
             }
         }

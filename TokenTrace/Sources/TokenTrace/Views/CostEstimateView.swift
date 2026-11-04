@@ -54,21 +54,15 @@ struct CostEstimateView: View {
             Text(CostEstimator.formatCost(estimate.totalEstimatedCost))
                 .font(.system(size: 24, weight: .bold, design: .rounded))
                 .monospacedDigit()
-            Text("likely billed")
+            Text("estimated today")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
-        .help("Token-based estimate with no caching discount applied. The gateway reports no billing or cache data, so this uncached figure is the closest available proxy for the actual charge.")
-
-        if !estimate.timeRange.isEmpty {
-            Text(estimate.timeRange)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
+        .help("Per-turn cost sum using gateway rates for uncached input, cache read, cache write, and output tokens.")
 
         HStack(spacing: 12) {
             HStack(spacing: 4) {
-                Text("In")
+                Text("Prompt")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                 Text(UsageStore.formatTokens(estimate.totalInputTokens))
@@ -87,24 +81,7 @@ struct CostEstimateView: View {
             }
         }
 
-        if usageStore.todayCacheModeledCost > 0 {
-            HStack(spacing: 4) {
-                Text("with caching")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                Text(CostEstimator.formatCost(usageStore.todayCacheModeledCost))
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                Text("floor")
-                    .font(.caption2)
-                    .foregroundStyle(.quaternary)
-            }
-            .padding(.top, 2)
-            .help("Lower bound assuming prompt caching applied to re-sent context (re-sent tokens billed at the 0.1× cache-read rate). Caching is rarely recorded, so the real charge is likely closer to the figure above.")
-        }
-
-        let visibleModels = estimate.perModelEstimates.filter { $0.requestPercentage > 0 }
+        let visibleModels = estimate.perModelEstimates.filter { $0.estimatedCost > 0 || $0.requestPercentage > 0 }
         if !visibleModels.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(visibleModels.enumerated()), id: \.offset) { _, model in
@@ -113,11 +90,6 @@ struct CostEstimateView: View {
             }
             .padding(.top, 4)
         }
-
-        Text("Estimated from token counts × configured prices. The gateway provides no billing or caching data, so this is not an invoice.")
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
-            .padding(.top, 4)
     }
 
     // MARK: - Per-Model Row

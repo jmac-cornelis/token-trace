@@ -83,18 +83,8 @@ final class UsageStore: ObservableObject {
     // MARK: – Refresh (called by CollectorService every 5s)
 
     func refresh() {
-        let mode = settings.dataSourceMode
-        logger.info("refresh() mode=\(mode.rawValue) email=\(self.settings.grafanaUserEmail) configured=\(self.settings.isGrafanaConfigured)")
-        switch mode {
-        case .local:
-            grafanaTask?.cancel()
-            grafanaTask = nil
-            isLoadingGrafana = false
-            localTask?.cancel()
-            localTask = Task { await self.refreshFromLocal() }
-        case .grafana:
-            refreshFromGrafana()
-        }
+        localTask?.cancel()
+        localTask = Task { await self.refreshFromLocal() }
     }
 
     // Awaitable refresh: refresh() is fire-and-forget, so tests await this instead.
@@ -146,231 +136,12 @@ final class UsageStore: ObservableObject {
             lastRefreshTime = Date()
 
             if settings.showCostEstimates {
-                costEstimate = computeLocalCostEstimate()
+                costEstimate = try await db.todayModelCostEstimate()
             } else {
                 costEstimate = nil
             }
         } catch {
             logger.error("Refresh error: \(error)")
-        }
-    }
-
-    // MARK: – Grafana Refresh
-
-    private func refreshFromGrafana(forceFullFetch: Bool = false) {
-        guard settings.isGrafanaConfigured else {
-            grafanaError = "Grafana user email not configured"
-            dataSourceLabel = "Server-Side (Grafana)"
-            return
-        }
-
-        if isLoadingGrafana {
-            return
-        }
-
-        let hasCache = cachedGrafanaRange == chartRange && !cachedHistoricalDays.isEmpty
-        let isIncremental = hasCache && !forceFullFetch
-
-        if !isIncremental {
-            if let last = lastGrafanaFetch, Date().timeIntervalSince(last) < 30, !forceFullFetch {
-                return
-            }
-        }
-
-        isLoadingGrafana = true
-        grafanaError = nil
-        dataSourceLabel = "Server-Side (Grafana)"
-
-        if !isIncremental {
-            todayTotalTokens = 0
-            todayPromptTokens = 0
-            todayCompletionTokens = 0
-            todayCachedTokens = 0
-            todayReasoningTokens = 0
-            todayUniqueWork = 0
-            todayCacheModeledCost = 0
-            openCodeTokens = 0
-            codexTokens = 0
-            hermesTokens = 0
-            openclawTokens = 0
-            continueTokens = 0
-            rangeTotalTokens = 0
-            rangePromptTokens = 0
-            rangeCompletionTokens = 0
-            rangeUniqueWork = 0
-            chartData = []
-            dailySummaries = []
-            recentSessions = []
-            costEstimate = nil
-        }
-
-        let email = settings.grafanaUserEmail
-        let baseURL = settings.grafanaBaseURL
-
-        grafanaTask?.cancel()
-        grafanaTask = Task {
-            do {
-                let service = GrafanaService(baseURL: baseURL)
-
-                if isIncremental {
-                    logger.info("Grafana incremental: fetching today only for \(email, privacy: .public)")
-                    let todayData = try await service.fetchTokenUsage(email: email, from: "now/d", to: "now")
-
-                    if Task.isCancelled { return }
-
-                    let todaySummaries = todayData.dailySummaries
-                    let merged = self.cachedHistoricalDays.filter { !Calendar.current.isDateInToday($0.date) } + todaySummaries
-                    let mergedTokenData = GrafanaTokenData(
-                        dailySummaries: merged.sorted { $0.date < $1.date },
-                        totalPromptTokens: merged.reduce(0) { $0 + $1.promptTokens },
-                        totalCompletionTokens: merged.reduce(0) { $0 + $1.completionTokens },
-                        totalTokens: merged.reduce(0) { $0 + $1.totalTokens },
-                        totalRequests: merged.reduce(0) { $0 + $1.requestCount }
-                    )
-
-                    self.cachedHistoricalDays = mergedTokenData.dailySummaries
-                    self.lastGrafanaFetch = Date()
-                    applyGrafanaData(tokenData: mergedTokenData, modelBreakdown: self.cachedModelBreakdown ?? [])
-                } else {
-                    let (from, to) = self.grafanaTimeRange(for: self.chartRange)
-                    logger.info("Grafana full fetch: email=\(email, privacy: .public) range=\(from, privacy: .public)..\(to, privacy: .public)")
-
-                    async let tokenDataFuture = service.fetchTokenUsage(email: email, from: from, to: to)
-                    async let modelBreakdownFuture = service.fetchModelBreakdown(email: email, from: from, to: to)
-
-                    let tokenData = try await tokenDataFuture
-                    let modelBreakdown = try await modelBreakdownFuture
-
-                    if Task.isCancelled { return }
-
-                    logger.info("Grafana OK: \(tokenData.totalTokens, privacy: .public) tokens, \(tokenData.dailySummaries.count, privacy: .public) days, \(modelBreakdown.count, privacy: .public) models")
-
-                    self.cachedGrafanaRange = self.chartRange
-                    self.cachedHistoricalDays = tokenData.dailySummaries
-                    self.cachedModelBreakdown = modelBreakdown
-                    self.lastGrafanaFetch = Date()
-                    applyGrafanaData(tokenData: tokenData, modelBreakdown: modelBreakdown)
-                }
-            } catch is CancellationError {
-                logger.info("Grafana fetch cancelled")
-            } catch {
-                let msg = String(describing: error)
-                logger.error("Grafana error: \(msg, privacy: .public)")
-                grafanaError = msg
-                isLoadingGrafana = false
-            }
-        }
-    }
-
-    private func applyGrafanaData(tokenData: GrafanaTokenData, modelBreakdown: [GrafanaModelBreakdown]) {
-        guard settings.dataSourceMode == .grafana else { return }
-
-        let todaySummary = tokenData.dailySummaries.first { Calendar.current.isDateInToday($0.date) }
-        todayTotalTokens = todaySummary?.totalTokens ?? 0
-        todayPromptTokens = todaySummary?.promptTokens ?? 0
-        todayCompletionTokens = todaySummary?.completionTokens ?? 0
-        todayCachedTokens = 0
-        todayReasoningTokens = 0
-        todayCachedReadTokens = 0
-        todayCachedWriteTokens = 0
-        todayBillableTokens = CostEstimator.computeBillableTokens(
-            promptTokens: todaySummary?.promptTokens ?? 0,
-            completionTokens: todaySummary?.completionTokens ?? 0,
-            cachedReadTokens: 0,
-            cachedWriteTokens: 0,
-            reasoningTokens: 0
-        )
-        todayEstimatedCost = 0
-        todayUniqueWork = 0
-        todayCacheModeledCost = 0
-
-        openCodeTokens = tokenData.totalTokens
-        codexTokens = 0
-        hermesTokens = 0
-        openclawTokens = 0
-        continueTokens = 0
-
-        dailySummaries = tokenData.dailySummaries.map { day in
-            DailySummary(
-                date: day.date,
-                totalTokens: day.totalTokens,
-                promptTokens: day.promptTokens,
-                newInputTokens: 0,
-                completionTokens: day.completionTokens,
-                cachedTokens: 0,
-                reasoningTokens: 0,
-                sessionCount: day.requestCount,
-                cachedReadTokens: 0,
-                cachedWriteTokens: 0,
-                estimatedCostUSD: 0
-            )
-        }
-
-        rangeTotalTokens = tokenData.totalTokens
-        rangePromptTokens = tokenData.totalPromptTokens
-        rangeCompletionTokens = tokenData.totalCompletionTokens
-        rangeUniqueWork = 0
-        rangeBillableTokens = CostEstimator.computeBillableTokens(
-            promptTokens: tokenData.totalPromptTokens,
-            completionTokens: tokenData.totalCompletionTokens,
-            cachedReadTokens: 0,
-            cachedWriteTokens: 0,
-            reasoningTokens: 0
-        )
-        rangeEstimatedCost = 0
-
-        let fmt = DateFormatter()
-        fmt.dateFormat = "MMM d"
-        chartData = tokenData.dailySummaries.map { day in
-            ChartDataPoint(
-                date: day.date,
-                totalTokens: day.totalTokens,
-                promptTokens: day.promptTokens,
-                newInputTokens: 0,
-                completionTokens: day.completionTokens,
-                label: fmt.string(from: day.date)
-            )
-        }
-
-        if settings.showCostEstimates {
-            let todayGrafana = tokenData.dailySummaries.first { Calendar.current.isDateInToday($0.date) }
-            let modelCounts = modelBreakdown.map { ModelRequestCount(model: $0.model, count: $0.requestCount) }
-            costEstimate = CostEstimator.estimate(
-                totalPromptTokens: todayGrafana?.promptTokens ?? 0,
-                totalCompletionTokens: todayGrafana?.completionTokens ?? 0,
-                modelRequestCounts: modelCounts
-            )
-        } else {
-            costEstimate = nil
-        }
-
-        recentSessions = []
-        lastRefreshTime = Date()
-        isLoadingGrafana = false
-    }
-
-    // MARK: – Local Cost Estimation
-
-    private func computeLocalCostEstimate() -> CostEstimate {
-        let modelCounts = recentSessions.map {
-            ModelRequestCount(model: $0.model, count: $0.eventCount)
-        }
-
-        return CostEstimator.estimate(
-            totalPromptTokens: todayPromptTokens,
-            totalCompletionTokens: todayCompletionTokens,
-            modelRequestCounts: modelCounts
-        )
-    }
-
-    // MARK: – Grafana Time Range
-
-    private func grafanaTimeRange(for range: ChartRange) -> (String, String) {
-        switch range {
-        case .week:  return ("now-7d", "now")
-        case .month: return ("now-30d", "now")
-        case .year:  return ("now-1y", "now")
-        case .total: return ("now-5y", "now")
         }
     }
 
@@ -380,12 +151,10 @@ final class UsageStore: ObservableObject {
     static let formatRelativeTime = TokenFormatter.formatRelativeTime
 
     func loadChartData() {
-        if settings.dataSourceMode == .grafana { return }
         Task { await loadChartDataAsync() }
     }
 
     private func loadChartDataAsync() async {
-        if settings.dataSourceMode == .grafana { return }
         do {
             chartData = try await db.chartData(range: chartRange)
             let summary = try await db.rangeSummary(range: chartRange)
@@ -408,17 +177,7 @@ final class UsageStore: ObservableObject {
 
     func setChartRange(_ range: ChartRange) {
         chartRange = range
-        if settings.dataSourceMode == .grafana {
-            grafanaTask?.cancel()
-            isLoadingGrafana = false
-            lastGrafanaFetch = nil
-            cachedGrafanaRange = nil
-            cachedHistoricalDays = []
-            cachedModelBreakdown = nil
-            refreshFromGrafana(forceFullFetch: true)
-        } else {
-            loadChartData()
-        }
+        loadChartData()
     }
 
     func loadSessionsForDate(_ date: Date) {
