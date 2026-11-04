@@ -141,6 +141,13 @@ enum CostEstimator {
         ModelPricing(modelName: "developer-luna",                           inputPricePerMillion: 1.0,   outputPricePerMillion: 6.0,  cacheReadPricePerMillion: 0.1),
         ModelPricing(modelName: "developer-minimax",                        inputPricePerMillion: 0.5,   outputPricePerMillion: 2.2),
         ModelPricing(modelName: "developer-opus-5",                         inputPricePerMillion: 5.0,   outputPricePerMillion: 25.0, cacheReadPricePerMillion: 0.5),
+        ModelPricing(modelName: "developer-argon",                          inputPricePerMillion: 2.0,   outputPricePerMillion: 10.0, cacheReadPricePerMillion: 0.1),
+        ModelPricing(modelName: "developer-gemini-argon",                   inputPricePerMillion: 2.0,   outputPricePerMillion: 10.0, cacheReadPricePerMillion: 0.1),
+        ModelPricing(modelName: "developer-ember",                          inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0, cacheReadPricePerMillion: 0.3),
+        ModelPricing(modelName: "developer-astra",                          inputPricePerMillion: 10.0,  outputPricePerMillion: 50.0, cacheReadPricePerMillion: 1.0),
+        ModelPricing(modelName: "developer-fable",                          inputPricePerMillion: 10.0,  outputPricePerMillion: 50.0, cacheReadPricePerMillion: 0.25),
+        ModelPricing(modelName: "developer-glm-flash",                      inputPricePerMillion: 0.15,  outputPricePerMillion: 0.5,  cacheReadPricePerMillion: 0.03),
+        ModelPricing(modelName: "developer-opus-4.6",                       inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0, cacheReadPricePerMillion: 0.3),
         ModelPricing(modelName: "fable-5",                                  inputPricePerMillion: 5.0,   outputPricePerMillion: 25.0, cacheReadPricePerMillion: 0.5),
         ModelPricing(modelName: "cn_asic:react_local:claude-sonnet-4-5",   inputPricePerMillion: 3.0,   outputPricePerMillion: 15.0),
 

@@ -18,16 +18,16 @@ final class FileWatcher {
         // simply skipped; watchers re-arm as parents appear on the debounced rescan.
         static func defaultLocal() -> Paths {
             let home = FileManager.default.homeDirectoryForCurrentUser.path
+            let hermesDBs = HermesReader().discoverDatabasePaths()
             return Paths(
                 directories: [
                     OpenclawReader.defaultSessionsBasePath,
                     "\(home)/.codex/sessions"
                 ],
-                files: [
-                    OpenCodeReader.defaultPath,
+                files: OpenCodeReader.defaultPaths + [
                     CodexReader.defaultPath,
                     ContinueReader.defaultPath
-                ]
+                ] + hermesDBs
             )
         }
     }

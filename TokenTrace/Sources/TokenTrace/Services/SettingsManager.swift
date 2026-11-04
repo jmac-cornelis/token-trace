@@ -39,6 +39,8 @@ final class SettingsManager: ObservableObject {
         static let grafanaBaseURL    = "tokenTrace.grafanaBaseURL"
         static let grafanaUserEmail  = "tokenTrace.grafanaUserEmail"
         static let showCostEstimates = "tokenTrace.showCostEstimates"
+        static let remoteSSHHost     = "tokenTrace.remoteSSHHost"
+        static let remoteSyncEnabled = "tokenTrace.remoteSyncEnabled"
     }
 
     // MARK: Default Values
@@ -48,6 +50,8 @@ final class SettingsManager: ObservableObject {
         static let grafanaBaseURL    = "http://cn-ai-01.cornelisnetworks.com:4000"
         static let grafanaUserEmail  = ""
         static let showCostEstimates = true
+        static let remoteSSHHost     = "ai-devsrvr-11"
+        static let remoteSyncEnabled = true
     }
 
     // MARK: Published Settings
@@ -70,6 +74,16 @@ final class SettingsManager: ObservableObject {
     /// Whether to display estimated cost alongside token counts.
     @Published var showCostEstimates: Bool {
         didSet { defaults.set(showCostEstimates, forKey: Keys.showCostEstimates) }
+    }
+
+    /// Remote SSH host running Hermes loop / OpenCode workers (e.g. "ai-devsrvr-11").
+    @Published var remoteSSHHost: String {
+        didSet { defaults.set(remoteSSHHost, forKey: Keys.remoteSSHHost) }
+    }
+
+    /// Whether to collect Hermes and OpenCode token usage from `remoteSSHHost`.
+    @Published var remoteSyncEnabled: Bool {
+        didSet { defaults.set(remoteSyncEnabled, forKey: Keys.remoteSyncEnabled) }
     }
 
     // MARK: Computed Properties
@@ -129,6 +143,18 @@ final class SettingsManager: ObservableObject {
             self.showCostEstimates = defaults.bool(forKey: Keys.showCostEstimates)
         } else {
             self.showCostEstimates = Defaults.showCostEstimates
+        }
+
+        if let stored = defaults.string(forKey: Keys.remoteSSHHost) {
+            self.remoteSSHHost = stored
+        } else {
+            self.remoteSSHHost = Defaults.remoteSSHHost
+        }
+
+        if defaults.object(forKey: Keys.remoteSyncEnabled) != nil {
+            self.remoteSyncEnabled = defaults.bool(forKey: Keys.remoteSyncEnabled)
+        } else {
+            self.remoteSyncEnabled = Defaults.remoteSyncEnabled
         }
     }
 }

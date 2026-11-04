@@ -29,6 +29,7 @@ struct UsageEvent: Codable, FetchableRecord, PersistableRecord, Identifiable, Se
     enum Source: String, Codable, DatabaseValueConvertible, Sendable {
         case opencode
         case codex
+        case hermes
         case openclaw
         // `continue` is a Swift reserved keyword; backticks are required at the
         // declaration site. The raw value persisted to the DB is still "continue".

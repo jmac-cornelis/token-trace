@@ -29,6 +29,7 @@ final class UsageStore: ObservableObject {
 
     @Published var openCodeTokens: Int = 0
     @Published var codexTokens: Int = 0
+    @Published var hermesTokens: Int = 0
     @Published var openclawTokens: Int = 0
     @Published var continueTokens: Int = 0
 
@@ -53,11 +54,13 @@ final class UsageStore: ObservableObject {
 
     @Published var openCodeHealth: SourceHealth?
     @Published var codexHealth: SourceHealth?
+    @Published var hermesHealth: SourceHealth?
     @Published var openclawHealth: SourceHealth?
     @Published var continueHealth: SourceHealth?
 
     var openCodeHealthy: Bool { openCodeHealth?.isHealthy ?? false }
     var codexHealthy: Bool { codexHealth?.isHealthy ?? false }
+    var hermesHealthy: Bool { hermesHealth?.isHealthy ?? false }
     var openclawHealthy: Bool { openclawHealth?.isHealthy ?? false }
     var continueHealthy: Bool { continueHealth?.isHealthy ?? false }
 
@@ -134,6 +137,7 @@ final class UsageStore: ObservableObject {
             )
             openCodeTokens = summary.bySource[.opencode] ?? 0
             codexTokens = summary.bySource[.codex] ?? 0
+            hermesTokens = summary.bySource[.hermes] ?? 0
             openclawTokens = summary.bySource[.openclaw] ?? 0
             continueTokens = summary.bySource[.continue] ?? 0
             recentSessions = try await db.recentSessions(limit: 10)
@@ -187,6 +191,7 @@ final class UsageStore: ObservableObject {
             todayCacheModeledCost = 0
             openCodeTokens = 0
             codexTokens = 0
+            hermesTokens = 0
             openclawTokens = 0
             continueTokens = 0
             rangeTotalTokens = 0
@@ -281,6 +286,7 @@ final class UsageStore: ObservableObject {
 
         openCodeTokens = tokenData.totalTokens
         codexTokens = 0
+        hermesTokens = 0
         openclawTokens = 0
         continueTokens = 0
 

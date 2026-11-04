@@ -76,9 +76,13 @@ final class CollectorService: ObservableObject {
 
         let mode = SettingsManager.shared.dataSourceMode
         if mode == .local {
-            let outcome = await engine.collect()
+            let outcome = await engine.collect(
+                remoteHost: SettingsManager.shared.remoteSSHHost,
+                remoteEnabled: SettingsManager.shared.remoteSyncEnabled
+            )
             usageStore.openCodeHealth = outcome.openCodeHealth
             usageStore.codexHealth = outcome.codexHealth
+            usageStore.hermesHealth = outcome.hermesHealth
             usageStore.openclawHealth = outcome.openclawHealth
             usageStore.continueHealth = outcome.continueHealth
             if outcome.insertedCount > 0 {

@@ -196,6 +196,88 @@ final class DatabaseManager: @unchecked Sendable {
             try db.execute(sql: "DELETE FROM session_input_state WHERE source = 'opencode'")
         }
 
+        // v11: When provider prompt caching is active (`cachedReadTokens + cachedWriteTokens > 0`),
+        // OpenCode's `tokens.input` (stored in `promptTokens`) is already the uncached new input
+        // for that turn while `cachedReadTokens` holds the re-sent prefix. Applying a turn-to-turn
+        // delta on `promptTokens` across cached turns treated any turn whose uncached input exceeded
+        // the first turn's uncached input as a reset, or subtracted two uncached deltas. Repair
+        // existing cached rows so `newInputTokens = promptTokens` and re-seed `session_input_state`.
+        migrator.registerMigration("v11-cached-turn-new-input") { db in
+            try db.execute(sql: """
+                UPDATE usage_events
+                SET newInputTokens = promptTokens
+                WHERE source != 'codex' AND (cachedReadTokens + cachedWriteTokens) > 0
+                """)
+            try db.execute(sql: "DELETE FROM session_input_state")
+            try db.execute(sql: """
+                INSERT INTO session_input_state (source, sessionID, lastPromptTokens, lastObservedAt)
+                SELECT e.source,
+                       e.sessionID,
+                       CASE WHEN e.source = 'codex' THEN e.promptTokens
+                            ELSE e.promptTokens + e.cachedReadTokens + e.cachedWriteTokens
+                       END,
+                       e.observedAt
+                FROM usage_events e
+                JOIN (
+                    SELECT source, sessionID, MAX(observedAt) AS maxObservedAt
+                    FROM usage_events
+                    WHERE sessionID IS NOT NULL
+                    GROUP BY source, sessionID
+                ) latest
+                  ON e.source = latest.source
+                 AND e.sessionID = latest.sessionID
+                 AND e.observedAt = latest.maxObservedAt
+                GROUP BY e.source, e.sessionID
+                """)
+        }
+
+        // v12: Repair Codex newInputTokens where v11 set newInputTokens = promptTokens on cached
+        // Codex turns (Codex's input_tokens includes cached_input_tokens, unlike OpenCode/Hermes).
+        migrator.registerMigration("v12-codex-cached-new-input-fix") { db in
+            try db.execute(sql: """
+                WITH ordered AS (
+                    SELECT id,
+                           CASE
+                               WHEN LAG(promptTokens) OVER (
+                                        PARTITION BY source, sessionID
+                                        ORDER BY observedAt, id
+                                    ) IS NULL
+                                 OR promptTokens < LAG(promptTokens) OVER (
+                                        PARTITION BY source, sessionID
+                                        ORDER BY observedAt, id
+                                    )
+                               THEN promptTokens
+                               ELSE promptTokens - LAG(promptTokens) OVER (
+                                        PARTITION BY source, sessionID
+                                        ORDER BY observedAt, id
+                                    )
+                           END AS delta
+                    FROM usage_events
+                    WHERE source = 'codex' AND sessionID IS NOT NULL
+                )
+                UPDATE usage_events
+                SET newInputTokens = ordered.delta
+                FROM ordered
+                WHERE usage_events.id = ordered.id
+                """)
+            try db.execute(sql: "DELETE FROM session_input_state WHERE source = 'codex'")
+            try db.execute(sql: """
+                INSERT INTO session_input_state (source, sessionID, lastPromptTokens, lastObservedAt)
+                SELECT e.source, e.sessionID, e.promptTokens, e.observedAt
+                FROM usage_events e
+                JOIN (
+                    SELECT source, sessionID, MAX(observedAt) AS maxObservedAt
+                    FROM usage_events
+                    WHERE source = 'codex' AND sessionID IS NOT NULL
+                    GROUP BY source, sessionID
+                ) latest
+                  ON e.source = latest.source
+                 AND e.sessionID = latest.sessionID
+                 AND e.observedAt = latest.maxObservedAt
+                GROUP BY e.source, e.sessionID
+                """)
+        }
+
         return migrator
     }
 
@@ -230,14 +312,17 @@ final class DatabaseManager: @unchecked Sendable {
                 event.newInputTokens = Self.computeNewInputTokens(for: event, lastPrompt: event.sessionID.flatMap { lastPromptBySession[SessionKey(source: event.source.rawValue, sessionID: $0)] })
                 try event.save(db)
                 if let sessionID = event.sessionID {
+                    let contextPrompt = event.source == .codex
+                        ? event.promptTokens
+                        : (event.promptTokens + event.cachedReadTokens + event.cachedWriteTokens)
                     try db.execute(sql: """
                         INSERT INTO session_input_state (source, sessionID, lastPromptTokens, lastObservedAt)
                         VALUES (?, ?, ?, ?)
                         ON CONFLICT(source, sessionID) DO UPDATE SET
                             lastPromptTokens = excluded.lastPromptTokens,
                             lastObservedAt = excluded.lastObservedAt
-                        """, arguments: [event.source.rawValue, sessionID, event.promptTokens, event.observedAt])
-                    lastPromptBySession[SessionKey(source: event.source.rawValue, sessionID: sessionID)] = event.promptTokens
+                        """, arguments: [event.source.rawValue, sessionID, contextPrompt, event.observedAt])
+                    lastPromptBySession[SessionKey(source: event.source.rawValue, sessionID: sessionID)] = contextPrompt
                 }
             }
         }
@@ -286,10 +371,14 @@ final class DatabaseManager: @unchecked Sendable {
 
     // Reset-aware positive delta of promptTokens within a (source, sessionID): a turn
     // whose prompt dropped below the last seen value (context compaction) or that opens
-    // a session counts its full prompt as new; otherwise only the growth is new. Mirrors
-    // the v9 backfill so live inserts and historical rows use identical math.
+    // a session counts its full prompt as new; otherwise only the growth is new. When
+    // provider prompt caching is active (`cachedReadTokens + cachedWriteTokens > 0`),
+    // `promptTokens` is already the uncached new input for that turn.
     private static func computeNewInputTokens(for event: UsageEvent, lastPrompt previous: Int?) -> Int {
         guard event.sessionID != nil else { return event.promptTokens }
+        if event.source != .codex && (event.cachedReadTokens + event.cachedWriteTokens > 0) {
+            return event.promptTokens
+        }
         guard let prev = previous, event.promptTokens >= prev else { return event.promptTokens }
         return event.promptTokens - prev
     }
@@ -607,17 +696,25 @@ final class DatabaseManager: @unchecked Sendable {
     // MARK: - Cursor Management
 
     func getCursor(for source: UsageEvent.Source) async throws -> String? {
-        return try await dbPool.read { db in
-            try Row.fetchOne(db, sql: "SELECT lastCursor FROM source_cursors WHERE source = ?", arguments: [source.rawValue])?["lastCursor"]
-        }
+        try await getCursor(forKey: source.rawValue)
     }
 
     func setCursor(for source: UsageEvent.Source, cursor: String) async throws {
+        try await setCursor(forKey: source.rawValue, cursor: cursor)
+    }
+
+    func getCursor(forKey key: String) async throws -> String? {
+        return try await dbPool.read { db in
+            try Row.fetchOne(db, sql: "SELECT lastCursor FROM source_cursors WHERE source = ?", arguments: [key])?["lastCursor"]
+        }
+    }
+
+    func setCursor(forKey key: String, cursor: String) async throws {
         try await dbPool.write { db in
             try db.execute(sql: """
                 INSERT INTO source_cursors (source, lastCursor, lastScanAt) VALUES (?, ?, ?)
                 ON CONFLICT(source) DO UPDATE SET lastCursor = excluded.lastCursor, lastScanAt = excluded.lastScanAt
-                """, arguments: [source.rawValue, cursor, Date()])
+                """, arguments: [key, cursor, Date()])
         }
     }
 }

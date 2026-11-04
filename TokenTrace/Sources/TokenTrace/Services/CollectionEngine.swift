@@ -6,13 +6,17 @@ import Foundation
 actor CollectionEngine {
     private let openCodeReader = OpenCodeReader()
     private let codexReader = CodexReader()
+    private let hermesReader = HermesReader()
     private let openclawReader = OpenclawReader()
     private let continueReader = ContinueReader()
     private let db: DatabaseManager
+    private var lastRemotePollTime: Date?
+    private let remotePollMinInterval: TimeInterval = 45.0
 
     struct Outcome: Sendable {
         var openCodeHealth: SourceHealth?
         var codexHealth: SourceHealth?
+        var hermesHealth: SourceHealth?
         var openclawHealth: SourceHealth?
         var continueHealth: SourceHealth?
         var insertedCount = 0
@@ -22,12 +26,14 @@ actor CollectionEngine {
         self.db = db
     }
 
-    func collect() async -> Outcome {
+    func collect(remoteHost: String = "ai-devsrvr-11", remoteEnabled: Bool = true) async -> Outcome {
         var outcome = Outcome()
         outcome.insertedCount += await runOpenCode(into: &outcome)
         outcome.insertedCount += await runCodex(into: &outcome)
+        outcome.insertedCount += await runHermes(into: &outcome)
         outcome.insertedCount += await runOpenclaw(into: &outcome)
         outcome.insertedCount += await runContinue(into: &outcome)
+        outcome.insertedCount += await runRemote(host: remoteHost, enabled: remoteEnabled, into: &outcome)
         return outcome
     }
 
@@ -126,6 +132,67 @@ actor CollectionEngine {
                 errorMessage: error.localizedDescription,
                 eventCount: 0
             )
+            return 0
+        }
+    }
+
+    private func runHermes(into outcome: inout Outcome) async -> Int {
+        do {
+            try hermesReader.connect()
+            let cursor = try await db.getCursor(for: .hermes)
+            let (events, newCursor) = hermesReader.fetchEvents(since: cursor)
+            if !events.isEmpty {
+                try await db.insertEvents(events)
+            }
+            if let newCursor = newCursor {
+                try await db.setCursor(for: .hermes, cursor: newCursor)
+            }
+            outcome.hermesHealth = hermesReader.healthCheck()
+            return events.count
+        } catch {
+            outcome.hermesHealth = SourceHealth(
+                source: .hermes,
+                isHealthy: false,
+                lastEventTime: nil,
+                errorMessage: error.localizedDescription,
+                eventCount: 0
+            )
+            return 0
+        }
+    }
+
+    private func runRemote(host: String, enabled: Bool, into outcome: inout Outcome) async -> Int {
+        let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard enabled, !trimmedHost.isEmpty else { return 0 }
+
+        if let lastPoll = lastRemotePollTime,
+           Date().timeIntervalSince(lastPoll) < remotePollMinInterval {
+            return 0
+        }
+        lastRemotePollTime = Date()
+
+        do {
+            let cursorKey = "remote:\(trimmedHost)"
+            let cursor = try await db.getCursor(forKey: cursorKey)
+            let remoteReader = RemoteUsageReader(host: trimmedHost, enabled: true)
+            let (events, newCursor) = remoteReader.fetchEvents(since: cursor)
+            if !events.isEmpty {
+                try await db.insertEvents(events)
+            }
+            if let newCursor = newCursor {
+                try await db.setCursor(forKey: cursorKey, cursor: newCursor)
+            }
+            if !events.isEmpty, outcome.hermesHealth?.isHealthy != true {
+                outcome.hermesHealth = SourceHealth(
+                    source: .hermes,
+                    isHealthy: true,
+                    lastEventTime: events.last?.observedAt,
+                    errorMessage: nil,
+                    eventCount: events.count
+                )
+            }
+            return events.count
+        } catch {
             return 0
         }
     }

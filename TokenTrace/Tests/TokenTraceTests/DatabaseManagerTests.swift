@@ -295,6 +295,33 @@ struct DatabaseManagerTests {
         #expect(bDeltas == [5_000])
     }
 
+    @Test func newInputTokensPreservesUncachedInputOnCachedTurns() async throws {
+        let (db, tempDir) = try makeDB()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let base = Date()
+        try await db.insertEvents([
+            makeEvent(source: .opencode, prompt: 94_213, completion: 322, cached: 0, total: 94_535, sessionID: "ses_c", date: base.addingTimeInterval(0)),
+            makeEvent(source: .opencode, prompt: 2_006, completion: 589, cached: 94_209, total: 96_804, sessionID: "ses_c", date: base.addingTimeInterval(1)),
+            makeEvent(source: .opencode, prompt: 1_972, completion: 1_889, cached: 96_213, total: 100_074, sessionID: "ses_c", date: base.addingTimeInterval(2)),
+        ])
+
+        let deltas = try await db.dbPool.read { db in
+            try Int.fetchAll(db, sql: "SELECT newInputTokens FROM usage_events WHERE sessionID = 'ses_c' ORDER BY observedAt, id")
+        }
+        #expect(deltas == [94_213, 2_006, 1_972])
+
+        // Codex includes cached_input_tokens inside promptTokens, so it must still delta promptTokens.
+        try await db.insertEvents([
+            makeEvent(source: .codex, prompt: 100_000, completion: 500, cached: 80_000, total: 100_500, sessionID: "ses_cdx", date: base.addingTimeInterval(0)),
+            makeEvent(source: .codex, prompt: 105_000, completion: 400, cached: 95_000, total: 105_400, sessionID: "ses_cdx", date: base.addingTimeInterval(1)),
+        ])
+        let codexDeltas = try await db.dbPool.read { db in
+            try Int.fetchAll(db, sql: "SELECT newInputTokens FROM usage_events WHERE sessionID = 'ses_cdx' ORDER BY observedAt, id")
+        }
+        #expect(codexDeltas == [100_000, 5_000])
+    }
+
     @Test func legacyRooMigrationClearsRowsAndCursor() async throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -307,7 +334,7 @@ struct DatabaseManagerTests {
         try db.setup()
 
         let summary = try await db.todaySummary()
-        #expect(summary.bySource[.opencode] == 150)
+        #expect(summary.bySource[.openclaw] == 150)
         #expect(summary.total == 150)
 
         let rooRows = try await db.dbPool.read { db in
@@ -447,9 +474,9 @@ struct DatabaseManagerTests {
             try db.execute(
                 sql: """
                     INSERT INTO usage_events (id, observedAt, source, sessionID, totalTokens)
-                    VALUES (?, ?, 'opencode', ?, ?)
+                    VALUES (?, ?, 'openclaw', ?, ?)
                     """,
-                arguments: [UUID().uuidString, Date(), "opencode-1", 150]
+                arguments: [UUID().uuidString, Date(), "openclaw-1", 150]
             )
             try db.execute(
                 sql: "INSERT INTO source_cursors (source, lastCursor, lastScanAt) VALUES (?, ?, ?)",

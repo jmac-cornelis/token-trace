@@ -220,6 +220,68 @@ struct OpenCodeReaderTests {
         #expect(throws: (any Error).self) { try reader.connect() }
     }
 
+    @Test func fetchEventsFromV2SchemaComputesTotalAndExtractsNestedModel() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let dbPath = tempDir.appendingPathComponent("opencode_v2.db").path
+        let dbQueue = try DatabaseQueue(path: dbPath)
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+
+        try dbQueue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE project (
+                    id TEXT PRIMARY KEY, worktree TEXT NOT NULL, vcs TEXT, name TEXT,
+                    time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL
+                )
+                """)
+            try db.execute(sql: """
+                CREATE TABLE session_v2 (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, directory TEXT NOT NULL,
+                    title TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL
+                )
+                """)
+            try db.execute(sql: """
+                CREATE TABLE session_message (
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL,
+                    seq INTEGER NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL,
+                    data TEXT NOT NULL
+                )
+                """)
+
+            try db.execute(sql: "INSERT INTO project VALUES ('p1', '/Users/test/code/token-trace', 'git', 'token-trace', ?, ?)", arguments: [now, now])
+            try db.execute(sql: "INSERT INTO session_v2 VALUES ('ses_v2', 'p1', '/Users/test/code/token-trace', 'V2 Session', ?, ?)", arguments: [now, now])
+
+            let userMsg = #"{"time":{"created":\#(now)},"text":"Fix TokenTrace"}"#
+            try db.execute(sql: "INSERT INTO session_message VALUES ('msg_u', 'ses_v2', 'user', 1, ?, ?, ?)", arguments: [now, now, userMsg])
+
+            let assistantMsg = #"{"time":{"created":\#(now + 100)},"agent":"engineer","model":{"id":"developer-argon","providerID":"cornelis"},"tokens":{"input":2500,"output":300,"reasoning":50,"cache":{"read":120000,"write":0}},"cost":0}"#
+            try db.execute(sql: "INSERT INTO session_message VALUES ('msg_a', 'ses_v2', 'assistant', 2, ?, ?, ?)", arguments: [now + 100, now + 100, assistantMsg])
+        }
+
+        let reader = OpenCodeReader(dbPath: dbPath)
+        try reader.connect()
+
+        let (events, cursor) = reader.fetchEvents(since: nil)
+        #expect(events.count == 1)
+        #expect(cursor != nil)
+
+        let ev = events[0]
+        #expect(ev.model == "developer-argon")
+        #expect(ev.provider == "cornelis")
+        #expect(ev.agent == "engineer")
+        #expect(ev.promptTokens == 2_500)
+        #expect(ev.completionTokens == 300)
+        #expect(ev.reasoningTokens == 50)
+        #expect(ev.cachedReadTokens == 120_000)
+        #expect(ev.totalTokens == 122_850)
+        #expect(ev.lastPrompt == "Fix TokenTrace")
+        // developer-argon: $2/M uncached input, $10/M output, $0.1/M cache read.
+        // 2,500 * $2/M + 120,000 * $0.1/M + 350 * $10/M = 0.005 + 0.012 + 0.0035 = 0.0205
+        #expect(abs(ev.estimatedCostUSD - 0.0205) < 0.000001)
+    }
+
     private func makeGlobalProjectReader() throws -> (OpenCodeReader, URL) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)

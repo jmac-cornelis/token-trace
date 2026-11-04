@@ -172,6 +172,12 @@ struct MenuBarDropdown: View {
                     icon: "terminal.fill"
                 )
                 sourceRow(
+                    name: "Hermes",
+                    tokens: usageStore.hermesTokens,
+                    isHealthy: usageStore.hermesHealthy,
+                    icon: "bolt.horizontal.circle.fill"
+                )
+                sourceRow(
                     name: "Codex",
                     tokens: usageStore.codexTokens,
                     isHealthy: usageStore.codexHealthy,
@@ -690,6 +696,7 @@ struct MenuBarDropdown: View {
         switch source {
         case .opencode: return .blue
         case .codex: return .green
+        case .hermes: return .purple
         case .openclaw: return .orange
         case .continue: return .pink
         }
@@ -699,6 +706,7 @@ struct MenuBarDropdown: View {
         switch source {
         case .opencode: return "OC"
         case .codex: return "Cdx"
+        case .hermes: return "Hrm"
         case .openclaw: return "OClw"
         case .continue: return "Cont"
         }
